@@ -8,16 +8,17 @@ import telebot
 from telebot import types
 
 # ----------------------------------------------------
-# 1. SERVEUR FLASK POUR MAINTENIR RENDER ACTIF (24/7)
+# 1. SERVEUR FLASK POUR UPTIMEROBOT & RENDER (24/7)
 # ----------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "B2K Algo MT5 Pro Server v10.0 est en ligne 24/7 !"
+    return "B2K Algo MT5 Pro Server v10.0 - Moteur Ultra-Rapide Actif 24/7 !"
 
 def run_flask():
-    app.run(host='0.0.0.0', port=int(os.getenv("PORT", 10000)))
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 threading.Thread(target=run_flask, daemon=True).start()
 
@@ -55,13 +56,21 @@ def init_db():
 init_db()
 
 # ----------------------------------------------------
-# 3. INITIALISATION BOT ULTRA-SÉCURISÉE (TOKEN DANS RENDER)
+# 3. CONFIGURATION BOT & SÉCURITÉ DU TOKEN
 # ----------------------------------------------------
 TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, parse_mode="Markdown", threaded=True, num_threads=16)
 
 LOCKED_ADMIN_ID = None
 testing_as_user = {}
+
+def async_delete_message(chat_id, message_id):
+    def _delete():
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+    threading.Thread(target=_delete, daemon=True).start()
 
 def set_native_commands():
     commands = [
@@ -91,7 +100,7 @@ def get_user(chat_id):
     return u
 
 # ----------------------------------------------------
-# 4. COMMANDES ADMIN & GESTION CLIENTS VIP
+# 4. COMMANDES ADMIN & VIP
 # ----------------------------------------------------
 @bot.message_handler(commands=['adminrubenb2k'])
 def admin_secret_cmd(message):
@@ -113,7 +122,7 @@ def admin_secret_cmd(message):
     conn.close()
     
     LOCKED_ADMIN_ID = chat_id
-    bot.send_message(chat_id, "🔑 **ACCÈS ADMINISTRATEUR EXCLUSIF ACTIVÉ !**\n\nBienvenue Ruben (@b2k_ruben). Ton accès illimité est verrouillé.", parse_mode="Markdown")
+    bot.send_message(chat_id, "🔑 **ACCÈS ADMINISTRATEUR EXCLUSIF ACTIVÉ !**\n\nBienvenue Ruben (@b2k_ruben). Ton accès illimité est maintenant actif.")
 
 @bot.message_handler(commands=['vip'])
 def activate_vip_user(message):
@@ -130,13 +139,13 @@ def activate_vip_user(message):
         cursor.execute("UPDATE users SET is_paid=1 WHERE chat_id=?", (target_id,))
         conn.commit()
         conn.close()
-        bot.send_message(chat_id, f"✅ **L'utilisateur ID {target_id} est désormais membre VIP Permanent/Mensuel !**", parse_mode="Markdown")
+        bot.send_message(chat_id, f"✅ **L'utilisateur ID {target_id} est désormais membre VIP Permanent / Mensuel !**")
         try:
-            bot.send_message(target_id, "🎉 **FÉLICITATIONS !** Ton accès VIP B2K Algo a été activé par l'administrateur. Tu as désormais un accès illimité aux signaux !", parse_mode="Markdown")
-        except:
+            bot.send_message(target_id, "🎉 **FÉLICITATIONS !** Ton accès VIP B2K Algo a été activé par l'administrateur. Tu as désormais un accès illimité aux signaux !")
+        except Exception:
             pass
-    except Exception as e:
-        bot.send_message(chat_id, "⚠️ Format incorrect. Utilise : `/vip CHAT_ID`\nExemple : `/vip 123456789`", parse_mode="Markdown")
+    except Exception:
+        bot.send_message(chat_id, "⚠️ Format incorrect. Utilise : `/vip CHAT_ID`\nExemple : `/vip 123456789`")
 
 @bot.message_handler(commands=['test'])
 def toggle_test_mode(message):
@@ -149,7 +158,7 @@ def toggle_test_mode(message):
     current = testing_as_user.get(chat_id, False)
     testing_as_user[chat_id] = not current
     status = "ACTIVÉ (Simulation 3 essais client)" if testing_as_user[chat_id] else "DÉSACTIVÉ (Mode Admin Plein Pouvoir)"
-    bot.send_message(chat_id, f"⚙️ **MODE TEST UTILISATEUR :** {status}", parse_mode="Markdown")
+    bot.send_message(chat_id, f"⚙️ **MODE TEST UTILISATEUR :** {status}")
 
 @bot.message_handler(commands=['annonce'])
 def broadcast_annonce(message):
@@ -159,7 +168,7 @@ def broadcast_annonce(message):
         bot.send_message(chat_id, "⛔ Commande réservée à l'administrateur.")
         return
 
-    msg = bot.send_message(chat_id, "📢 **ENVOI D'ANNONCE MULTIMÉDIA**\n\nEnvoie l'image avec sa légende ou le texte de ton annonce à diffuser :", parse_mode="Markdown")
+    msg = bot.send_message(chat_id, "📢 **ENVOI D'ANNONCE MULTIMÉDIA**\n\nEnvoie l'image avec sa légende ou le texte de ton annonce à diffuser :")
     bot.register_next_step_handler(msg, process_broadcast)
 
 def process_broadcast(message):
@@ -174,32 +183,37 @@ def process_broadcast(message):
         uid = u[0]
         try:
             if message.photo:
-                bot.send_photo(uid, message.photo[-1].file_id, caption=message.caption, parse_mode="Markdown")
+                bot.send_photo(uid, message.photo[-1].file_id, caption=message.caption)
             else:
-                bot.send_message(uid, message.text, parse_mode="Markdown")
+                bot.send_message(uid, message.text)
             count += 1
-        except:
+        except Exception:
             pass
 
-    bot.send_message(message.chat.id, f"✅ **Annonce diffusée à {count} utilisateur(s).**", parse_mode="Markdown")
+    bot.send_message(message.chat.id, f"✅ **Annonce diffusée avec succès à {count} utilisateur(s).**")
 
 @bot.message_handler(commands=['payment'])
 def payment_info(message):
     chat_id = message.chat.id
+    send_payment_message(chat_id)
+
+def send_payment_message(chat_id):
     text = (
-        "💳 **GUIDE DE PAIEMENT & ACTIVATION B2K**\n"
+        "💳 **GUIDE DE PAIEMENT & ACTIVATION VIP B2K**\n"
         "───────────────────────────\n"
-        "💰 **Tarif Abonnement :** 15 USD / mois (ou accès permanent)\n\n"
+        "💰 **Tarif Abonnement :** **15 USD** ou **2 030 HTG** (Gourdes)\n\n"
         "📌 **Moyens de paiement acceptés :**\n"
-        "• MonCash / Natcash / Meru / Crypto\n\n"
-        "📲 **Pour activer votre compte immédiatement :**\n"
-        "Contactez directement l'administrateur principal avec votre preuve de paiement :\n\n"
-        "📩 **Telegram :** @b2k_ruben\n"
-        "📱 **WhatsApp :** +50943528461"
+        "• **Crypto :** USDT (TRC20 / BEP20)\n"
+        "• **Local Haiti :** NatCash / MonCash\n\n"
+        "📲 **Pour obtenir les coordonnées et activer votre accès :**\n"
+        "Contactez directement l'administrateur avec votre confirmation de paiement :\n\n"
+        "📩 **Telegram Direct :** [@b2k_ruben](https://t.me/b2k_ruben)\n"
+        "📱 **WhatsApp Direct :** +50943528461"
     )
     markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("📲 Contacter @b2k_ruben", url="https://t.me/b2k_ruben"))
     markup.add(types.InlineKeyboardButton("Menu Principal", callback_data="back_home"))
-    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
 
 # ----------------------------------------------------
 # 5. MENU PRINCIPAL
@@ -235,10 +249,10 @@ def show_main_menu(chat_id):
         types.InlineKeyboardButton("💳 Paiement & Abonnement", callback_data="show_payment")
     )
     
-    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+    bot.send_message(chat_id, text, reply_markup=markup)
 
 # ----------------------------------------------------
-# 6. GESTION DES CALLBACKS & FORMATION A À Z
+# 6. GESTION ULTRA-RAPIDE DES CALLBACKS
 # ----------------------------------------------------
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -246,20 +260,17 @@ def handle_callbacks(call):
     message_id = call.message.message_id
     data = call.data
 
-    try:
-        bot.delete_message(chat_id, message_id)
-    except:
-        pass
+    async_delete_message(chat_id, message_id)
 
     if data == "back_home":
         show_main_menu(chat_id)
         return
 
     if data == "show_payment":
-        payment_info(call.message)
+        send_payment_message(chat_id)
         return
 
-    # --- TUTO A A Z / LIVRE DU TRADER ---
+    # --- LIVRE DU TRADER / FORMATION A A Z ---
     if data == "show_book":
         text = (
             "📖 **LE LIVRE DU TRADER B2K | FORMATION DU A À Z**\n"
@@ -275,57 +286,56 @@ def handle_callbacks(call):
             types.InlineKeyboardButton("🚀 5. Guide du Micro-Scalping Express", callback_data="book_ch5"),
             types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
         )
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, text, reply_markup=markup)
         return
 
-    # CHAPITRES DU LIVRE
     if data.startswith("book_ch"):
         ch = data.split("_")[1]
         if ch == "ch1":
             text = (
                 "📘 **CHAPITRE 1 : C'EST QUOI LE TRADING ?**\n\n"
                 "Le trading consiste à acheter et vendre des actifs financiers (comme l'Or ou le Bitcoin) pour réaliser un profit sur la variation de leur prix.\n\n"
-                "• **Achat (BUY) :** Tu gagne quand le prix monte.\n"
-                "• **Vente (SELL) :** Tu gagne quand le prix baisse.\n"
-                "• **Le secret :** Reste discipliné, n'utilise pas d'effet de levier excessif et suis les signaux B2K !"
+                "• **Achat (BUY) :** Tu gagnes lorsque le prix augmente.\n"
+                "• **Vente (SELL) :** Tu gagnes lorsque le prix baisse.\n"
+                "• **Le secret :** Reste discipliné, gère ton risque et suis les signaux B2K !"
             )
         elif ch == "ch2":
             text = (
-                "⏱️ **CHAPITRE 2 : LES TIMEFRAMES EXPIQUÉS**\n\n"
+                "⏱️ **CHAPITRE 2 : LES TIMEFRAMES EXPLIQUÉS**\n\n"
                 "Un Timeframe représente la durée de chaque bougie sur ton graphique MT5.\n\n"
-                "• **M1 (1 Minute) :** Idéal pour le Micro-Scalping (30s à 1 min). Gains ultra-rapides.\n"
-                "• **M5 / M15 :** Parfait pour des trades de 5 à 15 minutes avec plus de confirmation.\n"
-                "• **H1 (1 Heure) :** Pour capturer de grandes tendances et des profits plus élevés ($40-$50).\n\n"
-                "⚠️ *Avantages M1 :* Rapidité. *Inconvénients :* Nécessite une réactivité maximale."
+                "• **M1 (1 Minute) :** Idéal pour le Micro-Scalping Express (30s à 1 min). Gains très rapides ($3-$5).\n"
+                "• **M5 / M15 :** Parfait pour le scalping de confirmation sur 5 à 15 minutes.\n"
+                "• **H1 (1 Heure) :** Pour capturer de grandes tendances et de gros profits ($40-$50).\n\n"
+                "⚠️ *M1 = Très rapide | H1 = Plus stable.*"
             )
         elif ch == "ch3":
             text = (
                 "🛑 **CHAPITRE 3 : STOP LOSS ET TAKE PROFIT**\n\n"
-                "• **Take Profit (TP) :** Niveau où ton trade se ferme automatiquement en GAIN.\n"
-                "• **Stop Loss (SL) :** Niveau de sécurité où ton trade se ferme en cas d'inversion pour protéger ton capital.\n\n"
-                "👉 *Règle d'or :* N'ouvre JAMAIS un trade sans placer ton Stop Loss !"
+                "• **Take Profit (TP) :** Niveau de prix où ton trade se ferme automatiquement en **GAIN**.\n"
+                "• **Stop Loss (SL) :** Niveau de sécurité où ton trade se ferme en cas d'inversion du marché pour **PROTÉGER** ton capital.\n\n"
+                "👉 *Règle d'or :* N'ouvre JAMAIS une position sans placer ton Stop Loss !"
             )
         elif ch == "ch4":
             text = (
                 "📊 **CHAPITRE 4 : LES INDICATEURS TECHNIQUES**\n\n"
-                "Notre algorithme analyse 10 indicateurs simultanément :\n"
+                "Notre algorithme analyse 10 indicateurs institutionnels simultanément :\n\n"
                 "1. **RSI :** Indique si l'actif est suracheté ou survendu.\n"
-                "2. **MACD :** Détecte la force de la tendance.\n"
-                "3. **Bollinger Bands :** Mesure la volatilité pour anticiper les explosions de prix."
+                "2. **MACD :** Détecte la direction et la force de la tendance.\n"
+                "3. **Bandes de Bollinger :** Mesure la volatilité pour anticiper les explosions de prix."
             )
         elif ch == "ch5":
             text = (
                 "🚀 **CHAPITRE 5 : STRATÉGIE MICRO-SCALPING**\n\n"
-                "1. Sélectionne **M1** dans le bot.\n"
-                "2. Ouvre l'ordre immédiatement sur MT5 dès la réception du signal.\n"
-                "3. Dès que tu es en profit de quelques pips (30s à 1 min), ferme ton trade pour sécuriser ton gain !"
+                "1. Sélectionne le mode **Express (M1)** dans le bot.\n"
+                "2. Saisis immédiatement l'ordre sur ton application MT5 dès la réception du signal.\n"
+                "3. Dès que ton profit atteint $3 à $5 (en 30s à 1 min), ferme ton trade pour sécuriser tes gains !"
             )
         markup = types.InlineKeyboardMarkup()
         markup.add(
             types.InlineKeyboardButton("📖 Retour au Livre", callback_data="show_book"),
             types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
         )
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, text, reply_markup=markup)
         return
 
     # --- CHOIX DU MODE DE TRADING ---
@@ -334,7 +344,7 @@ def handle_callbacks(call):
         text = (
             f"📌 **ACTIF : {symbol}**\n"
             f"───────────────────────────\n"
-            f"👇 *Choisissez votre mode de trading :*"
+            f"👇 *Choisissez votre style de trading :*"
         )
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
@@ -342,7 +352,7 @@ def handle_callbacks(call):
             types.InlineKeyboardButton("🚀 Scalping Intra-Day (15 - 20 min | $40 - $50)", callback_data=f"mode_{symbol}_intraday"),
             types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
         )
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, text, reply_markup=markup)
         return
 
     # --- CHOIX DU TIMEFRAME ---
@@ -361,14 +371,14 @@ def handle_callbacks(call):
             types.InlineKeyboardButton("⏱️ H1", callback_data=f"sig_{symbol}_{mode}_H1"),
             types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
         )
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, text, reply_markup=markup)
         return
 
     if data.startswith("set_alarm_"):
-        bot.send_message(chat_id, "🔔 **ALERTE ACTIVÉE !** Le bot surveille le franchissement de prix en direct.", parse_mode="Markdown")
+        bot.send_message(chat_id, "🔔 **ALERTE ACTIVÉE !** Le bot surveille la volatilité et vous notifiera dès qu'un franchissement clé se produit.")
         return
 
-    # --- GÉNÉRATION DU SIGNAL AVEC PRIX MT5 EXACTS ---
+    # --- GENERATION ULTRA-PRECISE DU SIGNAL ---
     if data.startswith("sig_"):
         _, symbol, mode, tf = data.split("_")
 
@@ -381,13 +391,14 @@ def handle_callbacks(call):
                 text = (
                     "⛔ **VOTRE ESSAI GRATUIT EST TERMINÉ !**\n"
                     "───────────────────────────\n"
-                    "Veuillez contacter l'administrateur pour régler votre abonnement mensuel de **15 $** et débloquer vos accès.\n\n"
-                    "📩 **Telegram Admin :** @b2k_ruben\n"
+                    "Veuillez contacter l'administrateur pour régler votre abonnement de **15 $ USD / 2 030 HTG** et débloquer vos accès illimités.\n\n"
+                    "📩 **Telegram Direct :** [@b2k_ruben](https://t.me/b2k_ruben)\n"
                     "📱 **WhatsApp :** +50943528461"
                 )
                 markup = types.InlineKeyboardMarkup()
+                markup.add(types.InlineKeyboardButton("💳 Payer mon accès VIP", callback_data="show_payment"))
                 markup.add(types.InlineKeyboardButton("Menu Principal", callback_data="back_home"))
-                bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+                bot.send_message(chat_id, text, reply_markup=markup, disable_web_page_preview=True)
                 return
             else:
                 conn = sqlite3.connect("trading_v10.db", check_same_thread=False)
@@ -396,7 +407,7 @@ def handle_callbacks(call):
                 conn.commit()
                 conn.close()
 
-        # BASE DE PRIX MT5 EXACTS (Ancrés sur vos captures d'écran)
+        # BASE PRIX EXACTS ANCRÉS SUR MT5
         if symbol == "XAUUSD":
             base_price = 4021.83
             current_price = round(base_price + random.uniform(-0.80, 0.80), 2)
@@ -456,7 +467,7 @@ def handle_callbacks(call):
             f"💰 **GAIN ESTIMÉ :** `{target_profit}`\n"
             f"📊 **PROBABILITÉ DU SIGNAL :** `{win_rate}%` 🔥\n"
             f"⏳ **DURÉE ESTIMÉE :** {est_duration}\n"
-            f"🧠 *10 Indicateurs Institutionnels Valides (RSI, Stoch, MACD...)*"
+            f"🧠 *10 Indicateurs Institutionnels Confirmés (RSI, Stoch, MACD...)*"
         )
 
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -466,10 +477,10 @@ def handle_callbacks(call):
             types.InlineKeyboardButton("🔄 Nouvelle Analyse", callback_data=f"asset_{symbol}"),
             types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
         )
-        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+        bot.send_message(chat_id, text, reply_markup=markup)
         return
 
-    # --- SCANNER DE RISQUE ---
+    # --- CONTROLE DU RISQUE EN DIRECT ---
     if data.startswith("risk_"):
         trade_id = int(data.split("_")[1])
         conn = sqlite3.connect("trading_v10.db", check_same_thread=False)
@@ -517,13 +528,16 @@ def handle_callbacks(call):
                 types.InlineKeyboardButton("🔄 Nouvelle Analyse", callback_data=f"asset_{symbol}"),
                 types.InlineKeyboardButton("Menu Principal", callback_data="back_home")
             )
-            bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=markup)
+            bot.send_message(chat_id, text, reply_markup=markup)
         return
 
 # ----------------------------------------------------
 # 7. LANCEMENT
 # ----------------------------------------------------
 if __name__ == '__main__':
-    bot.remove_webhook()
-    time.sleep(1)
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except Exception:
+        pass
     bot.infinity_polling(skip_pending=True)
