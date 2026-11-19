@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import math
 import os
@@ -33,7 +32,6 @@ PROMO_CODE = "FRIENDXYZLOERADB"
 PARTNER_LINK = "https://pocket-friends.co/r/xyzloeradb"
 
 
-# ───────────────────────────── Indicateurs Réels ─────────────────────────────
 def sma(values: list[float], period: int) -> float | None:
     if len(values) < period:
         return None
@@ -94,7 +92,6 @@ def clamp(val: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, val))
 
 
-# ───────────────────────────── Bougies & Analyse ─────────────────────────────
 class CandleBuilder:
     def __init__(self, tf_sec: int, maxlen: int = 250):
         self.tf_sec = tf_sec
@@ -138,8 +135,8 @@ def analyze_closes(pair: str, tf: str, closes: list[float]) -> AnalysisResult:
             ready=False,
             samples=n,
             score=0.0,
-            bias="DONNÉES INSUFFISANTES",
-            uncertainty="Élevée : pas assez de clôtures collectées pour calculer les indicateurs.",
+            bias="DONNEES INSUFFISANTES",
+            uncertainty="Elevee : pas assez de clotures collectees pour calculer les indicateurs.",
             indicators={},
         )
 
@@ -167,15 +164,15 @@ def analyze_closes(pair: str, tf: str, closes: list[float]) -> AnalysisResult:
 
     score = sum(components) / len(components)
     if score >= 0.15:
-        bias = "PRESSION HAUSSIÈRE (TECHNIQUE)"
+        bias = "PRESSION HAUSSIERE (TECHNIQUE)"
     elif score <= -0.15:
-        bias = "PRESSION BAISSIÈRE (TECHNIQUE)"
+        bias = "PRESSION BAISSIERE (TECHNIQUE)"
     else:
         bias = "NEUTRE / CONSOLIDATION"
 
     uncertainty = (
-        f"Incertitude active : {n} points de série ({tf}). "
-        "Un score technique n'est pas une certitude de marché ; le bruit court terme reste élevé."
+        f"Incertitude active : {n} points de serie ({tf}). "
+        "Un score technique n'est pas une certitude de marche ; le bruit court terme reste eleve."
     )
 
     indicators = {
@@ -198,7 +195,6 @@ def analyze_closes(pair: str, tf: str, closes: list[float]) -> AnalysisResult:
     )
 
 
-# ───────────────────────────── Flux de Prix Binance ─────────────────────────────
 class BinanceFeed:
     URL = "https://api.binance.com/api/v3/ticker/price"
 
@@ -236,10 +232,7 @@ class MarketEngine:
         }
         self.prices: dict[str, float] = {}
         self.analyses: dict[str, dict[str, AnalysisResult]] = {
-            pair: {
-                tf: analyze_closes(pair, tf, [])
-                for tf in TIMEFRAMES
-            }
+            pair: {tf: analyze_closes(pair, tf, []) for tf in TIMEFRAMES}
             for pair in PAIRS
         }
         self.last_update: float = 0.0
@@ -267,7 +260,6 @@ class MarketEngine:
 engine = MarketEngine()
 
 
-# ───────────────────────────── Serveur Web & API ─────────────────────────────
 async def index(request: web.Request):
     html_path = Path(__file__).parent / "webapp" / "index.html"
     if html_path.exists():
@@ -290,22 +282,21 @@ async def api_state(request: web.Request):
     })
 
 
-# ───────────────────────────── Bot Telegram ─────────────────────────────
 def build_main_keyboard() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [
-            InlineKeyboardButton(text="📊 Analyser BTCUSDT (S30)", callback_data="analyze:BTCUSDT:S30"),
-            InlineKeyboardButton(text="⏱️ Analyser BTCUSDT (M1)", callback_data="analyze:BTCUSDT:M1"),
+            InlineKeyboardButton(text="Analyser BTCUSDT (S30)", callback_data="analyze:BTCUSDT:S30"),
+            InlineKeyboardButton(text="Analyser BTCUSDT (M1)", callback_data="analyze:BTCUSDT:M1"),
         ],
         [
-            InlineKeyboardButton(text="⚡ S5 / S15 Rapide", callback_data="analyze:BTCUSDT:S5"),
-            InlineKeyboardButton(text="🎁 Code Promo & Lien", callback_data="promo_info"),
+            InlineKeyboardButton(text="S5 / S15 Rapide", callback_data="analyze:BTCUSDT:S5"),
+            InlineKeyboardButton(text="Code Promo & Lien", callback_data="promo_info"),
         ],
     ]
     if WEBAPP_URL.startswith("https://"):
-        rows.append([InlineKeyboardButton(text="🚀 Ouvrir la Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
+        rows.append([InlineKeyboardButton(text="Ouvrir la Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
     else:
-        rows.append([InlineKeyboardButton(text="🔗 Lien Partenaire", url=PARTNER_LINK)])
+        rows.append([InlineKeyboardButton(text="Lien Partenaire", url=PARTNER_LINK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -316,21 +307,21 @@ async def format_analysis_message(pair: str, tf: str) -> str:
     if not res or not res.ready:
         samples = res.samples if res else 0
         return (
-            f"📈 *Analyse Technique — {pair} ({tf})*\n"
-            f"Prix actuel : *{px_str}*\n"
-            f"Collecte en cours : *{samples}/15* points minimum requis.\n\n"
-            f"⚠️ *Incertitude :* Pas assez de données réelles pour un diagnostic fiable."
+            f"Analyse Technique - {pair} ({tf})\n"
+            f"Prix actuel : {px_str}\n"
+            f"Collecte en cours : {samples}/15 points minimum requis.\n\n"
+            f"Incertitude : Pas assez de donnees reelles pour un diagnostic fiable."
         )
 
     ind = res.indicators
     return (
-        f"📈 *Analyse Technique — {pair} ({tf})*\n"
-        f"Prix actuel : *{px_str}*\n"
-        f"Lecture : *{res.bias}*\n"
-        f"Score technique : *{res.score}*\n"
+        f"Analyse Technique - {pair} ({tf})\n"
+        f"Prix actuel : {px_str}\n"
+        f"Lecture : {res.bias}\n"
+        f"Score technique : {res.score}\n"
         f"Indicateurs : RSI(14)={ind.get('rsi_14')} | MACD Hist={ind.get('macd_hist')} | SMA5={ind.get('sma_5')}\n\n"
-        f"⚠️ *Incertitude :* {res.uncertainty}\n"
-        f"🎁 Code promo : `{PROMO_CODE}`"
+        f"Incertitude : {res.uncertainty}\n"
+        f"Code promo : {PROMO_CODE}"
     )
 
 
@@ -344,6 +335,54 @@ async def run_bot():
 
     @dp.message(CommandStart())
     async def on_start(message: Message):
-        name = message.from_user.first_name if message.from_user else "frère"
+        name = message.from_user.first_name if message.from_user else "frere"
         await message.answer(
-            f"Salut {name} ! Moteur d'analyse réel actif
+            f"Salut {name} ! Moteur d'analyse reel actif (S5 / S15 / S30 / M1). "
+            f"Incertitude : les indicateurs refletent des calculs sur donnees recentes, jamais une garantie. "
+            f"Code promo : {PROMO_CODE} | Lien : {PARTNER_LINK}",
+            reply_markup=build_main_keyboard(),
+        )
+
+    @dp.callback_query(F.data.startswith("analyze:"))
+    async def on_analyze_cb(callback: CallbackQuery):
+        _, pair, tf = callback.data.split(":", 2)
+        await callback.answer("Analyse en cours...")
+        msg = await callback.message.answer(f"Analyse de {pair} en {tf} en cours... • • •")
+        await asyncio.sleep(0.9)
+        await msg.edit_text(f"Calcul des indicateurs (RSI, MACD, Bollinger) sur {pair} [{tf}]... • • •")
+        await asyncio.sleep(0.9)
+        text = await format_analysis_message(pair, tf)
+        await msg.edit_text(text, reply_markup=build_main_keyboard())
+
+    @dp.callback_query(F.data == "promo_info")
+    async def on_promo_cb(callback: CallbackQuery):
+        await callback.answer()
+        await callback.message.answer(
+            f"Code Promo : {PROMO_CODE}\n"
+            f"Lien : {PARTNER_LINK}\n\n"
+            f"Incertitude : Outil d'analyse technique uniquement, aucun conseil financier ni garantie de resultat.",
+            reply_markup=build_main_keyboard(),
+        )
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await engine.feed.close()
+        await bot.session.close()
+
+
+async def main():
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/api/state", api_state)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+    await asyncio.gather(engine.run(), run_bot())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
