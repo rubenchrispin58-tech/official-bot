@@ -1,6 +1,6 @@
 import asyncio
 import datetime
-import hashlib
+import io
 import logging
 import math
 import os
@@ -14,6 +14,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -21,9 +22,10 @@ from aiogram.types import (
     Message,
     WebAppInfo,
 )
+from PIL import Image, ImageDraw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-log = logging.getLogger("b2k_pro_bot")
+log = logging.getLogger("b2k_signal_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
@@ -37,11 +39,14 @@ PARTNER_LINK = "https://pocket-friends.co/r/xyzloeradb"
 FREE_TRIALS_LIMIT = 5
 ACTIVATION_CODE = os.getenv("ACTIVATION_CODE", "B2K20").strip()
 
+ASSETS_DIR = Path(__file__).parent / "assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+
 OTC_PAIRS = [
     "EUR/USD (OTC)",
     "AUD/USD (OTC)",
-    "USD/JPY (OTC)",
     "GBP/USD (OTC)",
+    "USD/JPY (OTC)",
     "EUR/CAD (OTC)",
     "CAD/JPY (OTC)",
 ]
@@ -50,22 +55,86 @@ ALL_PAIRS = OTC_PAIRS + CRYPTO_PAIRS
 TIMEFRAMES = {"S5": 5, "S15": 15, "S30": 30, "M1": 60}
 
 
+# ───────────────────────────── Visuels Rectangulaires ─────────────────────────────
+def make_rectangle_banner(kind: str) -> bytes:
+    w, h = 900, 320
+    if kind == "BUY":
+        bg = (14, 46, 34)
+        accent = (34, 197, 94)
+        label = "BUY"
+    elif kind == "SELL":
+        bg = (52, 18, 24)
+        accent = (239, 68, 68)
+        label = "SELL"
+    else:
+        bg = (20, 24, 38)
+        accent = (59, 130, 246)
+        label = "B2K"
+
+    img = Image.new("RGB", (w, h), bg)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([16, 16, w - 16, h - 16], outline=accent, width=6)
+    draw.rectangle([48, 72, w - 48, h - 72], fill=(28, 32, 46), outline=accent, width=3)
+
+    # Barre de niveau rectangulaire stylisée
+    bar_x0, bar_y0, bar_x1, bar_y1 = 110, 135, w - 110, 185
+    draw.rectangle([bar_x0, bar_y0, bar_x1, bar_y1], fill=(45, 50, 68))
+    fill_w = int((bar_x1 - bar_x0) * (0.76 if kind == "BUY" else 0.72 if kind == "SELL" else 0.55))
+    draw.rectangle([bar_x0, bar_y0, bar_x0 + fill_w, bar_y1], fill=accent)
+
+    # Indicateur directionnel géométrique net
+    cx, cy = w // 2, 225
+    if kind == "BUY":
+        draw.polygon([(cx, cy - 22), (cx - 28, cy + 16), (cx + 28, cy + 16)], fill=accent)
+    elif kind == "SELL":
+        draw.polygon([(cx, cy + 22), (cx - 28, cy - 16), (cx + 28, cy - 16)], fill=accent)
+    else:
+        draw.rectangle([cx - 45, cy - 8, cx + 45, cy + 8], fill=accent)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def get_photo_input(bot: Bot, slot: str):
+    custom_file = ASSETS_DIR / f"{slot}.jpg"
+    custom_png = ASSETS_DIR / f"{slot}.png"
+    target = custom_file if custom_file.exists() else (custom_png if custom_png.exists() else None)
+    if target is not None:
+        return BufferedInputFile(target.read_bytes(), filename=target.name)
+
+    tg_file_id = media_store.file_ids.get(slot)
+    if tg_file_id:
+        buf = io.BytesIO()
+        await bot.download(tg_file_id, destination=buf)
+        return BufferedInputFile(buf.getvalue(), filename=f"{slot}.jpg")
+
+    kind = "BUY" if slot == "buy" else ("SELL" if slot == "sell" else "MENU")
+    return BufferedInputFile(make_rectangle_banner(kind), filename=f"{slot}.png")
+
+
+class MediaStore:
+    def __init__(self):
+        self.file_ids: dict[str, str] = {}
+        self.awaiting_slot: dict[int, str] = {}
+
+
+media_store = MediaStore()
+
+
 # ───────────────────────────── Textes FR / EN ─────────────────────────────
 TEXTS = {
     "fr": {
         "choose_lang": "Choisis une langue / Choose a language :",
-        "lang_set": "Langue definie sur : Francais.",
-        "home_title": "B2K Signal Engine",
+        "lang_set": "Langue : Francais",
         "home_body": (
-            "Modele : 70% analyse technique / 30% aleatoire\n"
-            "Essais gratuits : 5 signaux\n"
-            "Code promo : {promo}\n"
-            "Admin : @{admin}\n\n"
-            "Note : les signaux comportent toujours une part d'incertitude."
+            "B2K Signal Engine\n"
+            "Choisis une action ci-dessous.\n"
+            "Rappel : tout signal comporte une part d'incertitude."
         ),
         "btn_signal": "Get signal",
         "btn_account": "Mon compte",
-        "btn_activate": "Activer / Depot",
+        "btn_activate": "Activer",
         "btn_promo": "Lien & Promo",
         "btn_faq": "FAQ",
         "btn_support": "Support",
@@ -79,40 +148,37 @@ TEXTS = {
         "pair_prompt": "Choisis une paire ({cat}) :",
         "tf_prompt": "Paire : {pair}\nChoisis le timeframe :",
         "wait_msg": "Attends le signal, frere • • •",
-        "analyzing_msg": "Analyse {pair} [{tf}] (70% tech / 30% random) • • •",
+        "analyzing_msg": "Analyse {pair} [{tf}] • • •",
         "unlimited": "Illimite (Admin)",
         "trial_left": "{left} essai(s) gratuit(s) restant(s) sur {limit}",
-        "active_vip": "Actif (Autorise)",
+        "active_vip": "Actif",
         "locked_msg": (
-            "Tes 5 essais gratuits sont utilises.\n"
-            "Activation requise (10$ / 20$ selon formule).\n\n"
-            "Pour activer immediatement sans setup :\n"
-            "Envoie le code d'activation dans le chat (ex: {code}) ou contacte @{admin}."
+            "Tes 5 essais gratuits sont termines.\n"
+            "Activation requise (10$ / 20$ selon formule).\n"
+            "Envoie le code d'activation (ex: {code}) ou contacte @{admin}."
         ),
-        "activated_ok": "Compte autorise immediatement ! Tu as maintenant acces aux signaux.",
-        "code_invalid": "Code invalide. Verifie le code ou contacte @{admin}.",
+        "activated_ok": "Compte autorise immediatement.",
+        "code_invalid": "Code invalide. Contacte @{admin}.",
         "faq_text": (
-            "FAQ :\n"
-            "- 5 essais gratuits pour tester le bot.\n"
-            "- 70% indicateurs techniques + 30% composante aleatoire.\n"
-            "- Aucun signal n'est garanti a 100%."
+            "FAQ & Guides :\n"
+            "1. Fonctionnement : le moteur combine 80% d'analyse technique et 20% de composante aleatoire.\n"
+            "2. Heure de reference (UTC) : {utc_now}\n"
+            "3. Timeframes : S15 offre souvent plus de stabilite que S5 ; surveille la paire choisie (ex: GBP/USD (OTC), CAD/JPY (OTC)).\n"
+            "4. Gestion : garde des mises prudentes, evite de forcer apres une perte et garde a l'esprit qu'aucun signal n'est garanti a 100%."
         ),
-        "support_text": "Support & contact direct : @{admin}",
+        "support_text": "Support direct : @{admin}",
     },
     "en": {
         "choose_lang": "Choose a language / Choisis une langue :",
-        "lang_set": "Language set to: English.",
-        "home_title": "B2K Signal Engine",
+        "lang_set": "Language: English",
         "home_body": (
-            "Model: 70% technical analysis / 30% random\n"
-            "Free trials: 5 signals\n"
-            "Promo code: {promo}\n"
-            "Admin: @{admin}\n\n"
-            "Note: short-term signals always carry uncertainty."
+            "B2K Signal Engine\n"
+            "Choose an option below.\n"
+            "Note: every signal carries uncertainty."
         ),
         "btn_signal": "Get signal",
         "btn_account": "My account",
-        "btn_activate": "Activate / Deposit",
+        "btn_activate": "Activate",
         "btn_promo": "Link & Promo",
         "btn_faq": "FAQ",
         "btn_support": "Support",
@@ -126,30 +192,30 @@ TEXTS = {
         "pair_prompt": "Choose a pair ({cat}):",
         "tf_prompt": "Pair: {pair}\nChoose timeframe:",
         "wait_msg": "Wait for the signal, bro • • •",
-        "analyzing_msg": "Analyzing {pair} [{tf}] (70% tech / 30% random) • • •",
+        "analyzing_msg": "Analyzing {pair} [{tf}] • • •",
         "unlimited": "Unlimited (Admin)",
         "trial_left": "{left} free trial(s) left out of {limit}",
-        "active_vip": "Active (Authorized)",
+        "active_vip": "Active",
         "locked_msg": (
-            "Your 5 free trials have been used.\n"
-            "Activation required ($10 / $20 plan).\n\n"
-            "Instant activation with zero setup:\n"
-            "Send your activation code here (e.g. {code}) or contact @{admin}."
+            "Your 5 free trials are used.\n"
+            "Activation required ($10 / $20 plan).\n"
+            "Send your activation code (e.g. {code}) or contact @{admin}."
         ),
-        "activated_ok": "Account authorized immediately! You can now generate signals.",
-        "code_invalid": "Invalid code. Check the code or contact @{admin}.",
+        "activated_ok": "Account authorized immediately.",
+        "code_invalid": "Invalid code. Contact @{admin}.",
         "faq_text": (
-            "FAQ:\n"
-            "- 5 free trials for new users.\n"
-            "- 70% technical indicators + 30% random component.\n"
-            "- No signal is 100% guaranteed."
+            "FAQ & Guides:\n"
+            "1. How it works: 80% technical analysis + 20% random component.\n"
+            "2. Reference time (UTC): {utc_now}\n"
+            "3. Timeframes: S15 is often steadier than S5; watch your selected pair (e.g. GBP/USD (OTC), CAD/JPY (OTC)).\n"
+            "4. Risk guide: use controlled sizing, avoid revenge trades, and remember no signal is 100% guaranteed."
         ),
         "support_text": "Direct support: @{admin}",
     },
 }
 
 
-# ───────────────────────────── État Utilisateur & Accès ─────────────────────────────
+# ───────────────────────────── Accès & Utilisateurs ─────────────────────────────
 class AccessManager:
     def __init__(self):
         self.lang: dict[int, str] = {}
@@ -157,38 +223,35 @@ class AccessManager:
         self.authorized: set[int] = set()
         self.awaiting_code: set[int] = set()
 
-    def get_lang(self, user_id: int) -> str:
-        return self.lang.get(user_id, "fr")
+    def get_lang(self, uid: int) -> str:
+        return self.lang.get(uid, "fr")
 
-    def is_admin(self, user_id: int, username: str | None) -> bool:
-        if username and username.lstrip("@").lower() == ADMIN_USERNAME.lower():
+    def is_admin(self, uid: int, username: str | None) -> bool:
+        return bool(username and username.lstrip("@").lower() == ADMIN_USERNAME.lower())
+
+    def can_generate(self, uid: int, username: str | None) -> bool:
+        if self.is_admin(uid, username) or uid in self.authorized:
             return True
-        return user_id in self.authorized and user_id == 0
+        return self.used_trials.get(uid, 0) < FREE_TRIALS_LIMIT
 
-    def can_generate(self, user_id: int, username: str | None) -> bool:
-        if self.is_admin(user_id, username) or user_id in self.authorized:
-            return True
-        return self.used_trials.get(user_id, 0) < FREE_TRIALS_LIMIT
+    def consume_trial(self, uid: int, username: str | None):
+        if not self.is_admin(uid, username) and uid not in self.authorized:
+            self.used_trials[uid] = self.used_trials.get(uid, 0) + 1
 
-    def consume_trial(self, user_id: int, username: str | None):
-        if not self.is_admin(user_id, username) and user_id not in self.authorized:
-            self.used_trials[user_id] = self.used_trials.get(user_id, 0) + 1
-
-    def status_label(self, user_id: int, username: str | None) -> str:
-        lang = self.get_lang(user_id)
-        t = TEXTS[lang]
-        if self.is_admin(user_id, username):
+    def status_label(self, uid: int, username: str | None) -> str:
+        t = TEXTS[self.get_lang(uid)]
+        if self.is_admin(uid, username):
             return t["unlimited"]
-        if user_id in self.authorized:
+        if uid in self.authorized:
             return t["active_vip"]
-        left = max(0, FREE_TRIALS_LIMIT - self.used_trials.get(user_id, 0))
+        left = max(0, FREE_TRIALS_LIMIT - self.used_trials.get(uid, 0))
         return t["trial_left"].format(left=left, limit=FREE_TRIALS_LIMIT)
 
 
 access = AccessManager()
 
 
-# ───────────────────────────── Indicateurs & Flux ─────────────────────────────
+# ───────────────────────────── Indicateurs & Moteur ─────────────────────────────
 def sma(values: list[float], period: int) -> float | None:
     return sum(values[-period:]) / period if len(values) >= period else None
 
@@ -285,13 +348,11 @@ class BinanceFeed:
 
 
 @dataclass
-class SignalOutput:
+class SignalResult:
     pair: str
     tf: str
-    direction: str
+    side: str  # "BUY" ou "SELL"
     prob_pct: float
-    tech_score: float
-    rand_score: float
     uncertainty: str
 
 
@@ -305,8 +366,8 @@ class SignalEngine:
         self.prices: dict[str, float] = {
             "EUR/USD (OTC)": 1.08420,
             "AUD/USD (OTC)": 0.65310,
-            "USD/JPY (OTC)": 154.620,
             "GBP/USD (OTC)": 1.26840,
+            "USD/JPY (OTC)": 154.620,
             "EUR/CAD (OTC)": 1.51230,
             "CAD/JPY (OTC)": 102.240,
         }
@@ -337,7 +398,7 @@ class SignalEngine:
             next_tick += 1.0
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
-    def generate(self, pair: str, tf: str, lang: str) -> SignalOutput:
+    def generate(self, pair: str, tf: str, lang: str) -> SignalResult:
         closes = self.candles[pair][tf].series()
         comps: list[float] = []
         r_val = rsi(closes, period=min(14, max(2, len(closes) - 1))) if len(closes) >= 4 else None
@@ -358,30 +419,32 @@ class SignalEngine:
 
         tech = sum(comps) / len(comps) if comps else 0.0
         rnd = random.uniform(-1.0, 1.0)
-        score = 0.70 * tech + 0.30 * rnd
-        direction = "BUY" if score >= 0.0 else "SELL"
-        prob = round(53.0 + min(1.0, abs(score)) * 24.0, 1)
+
+        # 80 % analyse technique + 20 % composante aléatoire
+        score = 0.80 * tech + 0.20 * rnd
+        side = "BUY" if score >= 0.0 else "SELL"
+        prob = round(54.0 + min(1.0, abs(score)) * 24.0, 1)
 
         if lang == "en":
-            unc = "Uncertainty active: 70% technical / 30% random, market can reverse quickly."
+            unc = "Uncertainty: short-term market noise and reversals remain possible."
         else:
-            unc = "Incertitude active : 70% technique / 30% aleatoire, retournement possible."
+            unc = "Incertitude : le bruit court terme et les retournements restent possibles."
 
-        return SignalOutput(pair, tf, direction, prob, round(tech, 3), round(rnd, 3), unc)
+        return SignalResult(pair, tf, side, prob, unc)
 
 
 engine = SignalEngine()
 
 
-# ───────────────────────────── Web Server ─────────────────────────────
+# ───────────────────────────── Serveur Web ─────────────────────────────
 async def index(request: web.Request):
     html_file = Path(__file__).parent / "webapp" / "index.html"
     if html_file.exists():
         return web.FileResponse(html_file)
-    return web.Response(text="B2K Bot Server OK", content_type="text/plain")
+    return web.Response(text="B2K Bot OK", content_type="text/plain")
 
 
-# ───────────────────────────── Claviers Clean ─────────────────────────────
+# ───────────────────────────── Claviers ─────────────────────────────
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
@@ -405,7 +468,7 @@ def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text=t["btn_activate"], callback_data="nav:activate"),
         ],
         [
-            InlineKeyboardButton(text=t["btn_promo"], url=PARTNER_LINK),
+            InlineKeyboardButton(text=t["btn_promo"], callback_data="nav:promo"),
             InlineKeyboardButton(text=t["btn_admin"], url=ADMIN_URL),
         ],
         [
@@ -462,7 +525,7 @@ def tf_keyboard(pair: str, lang: str) -> InlineKeyboardMarkup:
     )
 
 
-def signal_done_keyboard(pair: str, tf: str, lang: str) -> InlineKeyboardMarkup:
+def after_signal_keyboard(pair: str, tf: str, lang: str) -> InlineKeyboardMarkup:
     t = TEXTS[lang]
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -486,6 +549,17 @@ def back_home_keyboard(lang: str) -> InlineKeyboardMarkup:
     )
 
 
+def parse_photo_slot_command(text: str) -> str | None:
+    cleaned = text.strip().lower()
+    if cleaned in ("/set_photo_buy", "/set photo buy", "set photo buy"):
+        return "buy"
+    if cleaned in ("/set_photo_sell", "/set photo sell", "set photo sell"):
+        return "sell"
+    if cleaned in ("/set_photo_menu", "/set photo menu", "set photo menu"):
+        return "menu"
+    return None
+
+
 # ───────────────────────────── Bot Telegram ─────────────────────────────
 async def run_bot():
     if not BOT_TOKEN:
@@ -499,6 +573,7 @@ async def run_bot():
     async def cmd_start(message: Message):
         uid = message.from_user.id if message.from_user else 0
         access.awaiting_code.discard(uid)
+        media_store.awaiting_slot.pop(uid, None)
         await message.answer(
             TEXTS["fr"]["choose_lang"],
             reply_markup=lang_keyboard(),
@@ -519,12 +594,37 @@ async def run_bot():
         access.authorized.add(target_id)
         await message.answer(f"Utilisateur {target_id} autorise immediatement.")
 
-    @dp.message(F.text)
-    async def on_text_input(message: Message):
+    @dp.message(F.photo)
+    async def on_photo_upload(message: Message):
         uid = message.from_user.id if message.from_user else 0
+        uname = message.from_user.username if message.from_user else None
+        slot = media_store.awaiting_slot.pop(uid, None)
+        if not slot:
+            return
+        if not access.is_admin(uid, uname) and uid not in access.authorized:
+            await message.answer("Acces reserve a l'admin.")
+            return
+        largest = message.photo[-1]
+        media_store.file_ids[slot] = largest.file_id
+        buf = io.BytesIO()
+        await bot.download(largest.file_id, destination=buf)
+        (ASSETS_DIR / f"{slot}.jpg").write_bytes(buf.getvalue())
+        await message.answer(f"Photo '{slot}' enregistree.")
+
+    @dp.message(F.text)
+    async def on_text_msg(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        uname = message.from_user.username if message.from_user else None
         lang = access.get_lang(uid)
         t = TEXTS[lang]
         txt = (message.text or "").strip()
+
+        slot = parse_photo_slot_command(txt)
+        if slot:
+            media_store.awaiting_slot[uid] = slot
+            await message.answer(f"Envoie maintenant ta photo pour '{slot}' depuis ta galerie.")
+            return
+
         if uid in access.awaiting_code:
             if txt == ACTIVATION_CODE:
                 access.authorized.add(uid)
@@ -550,10 +650,11 @@ async def run_bot():
         access.lang[uid] = lang
         t = TEXTS[lang]
         await callback.answer(t["lang_set"])
-        await callback.message.edit_text(
-            f"{t['home_title']}\n\n{t['home_body'].format(promo=PROMO_CODE, admin=ADMIN_USERNAME)}",
+        photo = await get_photo_input(bot, "menu")
+        await callback.message.answer_photo(
+            photo=photo,
+            caption=t["home_body"],
             reply_markup=main_menu_keyboard(lang),
-            link_preview_options=NO_PREVIEW,
         )
 
     @dp.callback_query(F.data.startswith("nav:"))
@@ -566,54 +667,62 @@ async def run_bot():
         await callback.answer()
 
         if dest == "lang":
-            await callback.message.edit_text(
+            await callback.message.answer(
                 t["choose_lang"],
                 reply_markup=lang_keyboard(),
                 link_preview_options=NO_PREVIEW,
             )
         elif dest == "home":
             access.awaiting_code.discard(uid)
-            await callback.message.edit_text(
-                f"{t['home_title']}\n\n{t['home_body'].format(promo=PROMO_CODE, admin=ADMIN_USERNAME)}",
+            photo = await get_photo_input(bot, "menu")
+            await callback.message.answer_photo(
+                photo=photo,
+                caption=t["home_body"],
                 reply_markup=main_menu_keyboard(lang),
-                link_preview_options=NO_PREVIEW,
             )
         elif dest == "market":
             if not access.can_generate(uid, uname):
                 access.awaiting_code.add(uid)
-                await callback.message.edit_text(
+                await callback.message.answer(
                     t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
                     reply_markup=back_home_keyboard(lang),
                     link_preview_options=NO_PREVIEW,
                 )
                 return
-            await callback.message.edit_text(
+            await callback.message.answer(
                 t["market_prompt"],
                 reply_markup=market_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
             )
         elif dest == "account":
             st = access.status_label(uid, uname)
-            await callback.message.edit_text(
-                f"ID: {uid}\nStatus: {st}\nPromo: {PROMO_CODE}",
+            await callback.message.answer(
+                f"ID: {uid}\nStatus: {st}\nPromo: {PROMO_CODE}\nLink: {PARTNER_LINK}",
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "promo":
+            await callback.message.answer(
+                f"Promo: {PROMO_CODE}\nLink: {PARTNER_LINK}",
                 reply_markup=back_home_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
             )
         elif dest == "activate":
             access.awaiting_code.add(uid)
-            await callback.message.edit_text(
+            await callback.message.answer(
                 t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
                 reply_markup=back_home_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
             )
         elif dest == "faq":
-            await callback.message.edit_text(
-                t["faq_text"],
+            utc_now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+            await callback.message.answer(
+                t["faq_text"].format(utc_now=utc_now),
                 reply_markup=back_home_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
             )
         elif dest == "support":
-            await callback.message.edit_text(
+            await callback.message.answer(
                 t["support_text"].format(admin=ADMIN_USERNAME),
                 reply_markup=back_home_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
@@ -626,7 +735,7 @@ async def run_bot():
         t = TEXTS[lang]
         cat = callback.data.split(":", 1)[1]
         await callback.answer()
-        await callback.message.edit_text(
+        await callback.message.answer(
             t["pair_prompt"].format(cat=cat),
             reply_markup=pairs_keyboard(cat, lang),
             link_preview_options=NO_PREVIEW,
@@ -639,7 +748,7 @@ async def run_bot():
         t = TEXTS[lang]
         pair = callback.data.split(":", 1)[1]
         await callback.answer()
-        await callback.message.edit_text(
+        await callback.message.answer(
             t["tf_prompt"].format(pair=pair),
             reply_markup=tf_keyboard(pair, lang),
             link_preview_options=NO_PREVIEW,
@@ -655,7 +764,7 @@ async def run_bot():
         if not access.can_generate(uid, uname):
             access.awaiting_code.add(uid)
             await callback.answer()
-            await callback.message.edit_text(
+            await callback.message.answer(
                 t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
                 reply_markup=back_home_keyboard(lang),
                 link_preview_options=NO_PREVIEW,
@@ -666,35 +775,28 @@ async def run_bot():
         access.consume_trial(uid, uname)
         await callback.answer(t["wait_msg"])
 
-        wait_msg = await callback.message.answer(
-            t["wait_msg"],
-            link_preview_options=NO_PREVIEW,
-        )
-        await asyncio.sleep(0.9)
-        await wait_msg.edit_text(
-            t["analyzing_msg"].format(pair=pair, tf=tf),
-            link_preview_options=NO_PREVIEW,
-        )
-        await asyncio.sleep(0.9)
+        wait_msg = await callback.message.answer(t["wait_msg"], link_preview_options=NO_PREVIEW)
+        await asyncio.sleep(0.8)
+        await wait_msg.edit_text(t["analyzing_msg"].format(pair=pair, tf=tf))
+        await asyncio.sleep(0.8)
 
         sig = engine.generate(pair, tf, lang)
-        now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
         px = engine.prices.get(pair)
         px_fmt = f"{px:.5f}" if px is not None and px < 50 else (f"{px:.2f}" if px is not None else "N/A")
 
-        report = (
-            f"{sig.pair} | {sig.tf}\n"
-            f"Direction: {sig.direction}\n"
-            f"Prob: {sig.prob_pct}%\n"
-            f"Price: {px_fmt} | UTC: {now_utc}\n"
-            f"Mix: 70% tech ({sig.tech_score}) + 30% rand ({sig.rand_score})\n"
-            f"{sig.uncertainty}\n"
-            f"Promo: {PROMO_CODE}"
+        photo_slot = "buy" if sig.side == "BUY" else "sell"
+        banner = await get_photo_input(bot, photo_slot)
+
+        caption = (
+            f"{sig.side}\n"
+            f"Pair: {sig.pair} | {sig.tf}\n"
+            f"Prob: {sig.prob_pct}% | Price: {px_fmt}\n"
+            f"{sig.uncertainty}"
         )
-        await wait_msg.edit_text(
-            report,
-            reply_markup=signal_done_keyboard(pair, tf, lang),
-            link_preview_options=NO_PREVIEW,
+        await callback.message.answer_photo(
+            photo=banner,
+            caption=caption,
+            reply_markup=after_signal_keyboard(pair, tf, lang),
         )
 
     try:
