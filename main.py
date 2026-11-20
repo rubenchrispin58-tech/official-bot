@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import hashlib
 import logging
 import math
 import os
@@ -11,17 +12,18 @@ from pathlib import Path
 
 from aiohttp import ClientSession, ClientTimeout, web
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     Message,
     WebAppInfo,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-log = logging.getLogger("b2k_signal_bot")
+log = logging.getLogger("b2k_pro_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
@@ -31,6 +33,9 @@ ADMIN_USERNAME = "b2k_ruben"
 ADMIN_URL = f"https://t.me/{ADMIN_USERNAME}"
 PROMO_CODE = "FRIENDXYZLOERADB"
 PARTNER_LINK = "https://pocket-friends.co/r/xyzloeradb"
+
+FREE_TRIALS_LIMIT = 5
+ACTIVATION_CODE = os.getenv("ACTIVATION_CODE", "B2K20").strip()
 
 OTC_PAIRS = [
     "EUR/USD (OTC)",
@@ -42,15 +47,150 @@ OTC_PAIRS = [
 ]
 CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 ALL_PAIRS = OTC_PAIRS + CRYPTO_PAIRS
-
 TIMEFRAMES = {"S5": 5, "S15": 15, "S30": 30, "M1": 60}
 
 
-# ───────────────────────────── Indicateurs & Série ─────────────────────────────
+# ───────────────────────────── Textes FR / EN ─────────────────────────────
+TEXTS = {
+    "fr": {
+        "choose_lang": "Choisis une langue / Choose a language :",
+        "lang_set": "Langue definie sur : Francais.",
+        "home_title": "B2K Signal Engine",
+        "home_body": (
+            "Modele : 70% analyse technique / 30% aleatoire\n"
+            "Essais gratuits : 5 signaux\n"
+            "Code promo : {promo}\n"
+            "Admin : @{admin}\n\n"
+            "Note : les signaux comportent toujours une part d'incertitude."
+        ),
+        "btn_signal": "Get signal",
+        "btn_account": "Mon compte",
+        "btn_activate": "Activer / Depot",
+        "btn_promo": "Lien & Promo",
+        "btn_faq": "FAQ",
+        "btn_support": "Support",
+        "btn_admin": "Contacter Admin",
+        "btn_lang": "FR / EN",
+        "btn_back": "Retour",
+        "btn_otc": "Paires OTC",
+        "btn_crypto": "Paires Crypto",
+        "btn_another": "Nouveau signal",
+        "market_prompt": "Choisis le marche :",
+        "pair_prompt": "Choisis une paire ({cat}) :",
+        "tf_prompt": "Paire : {pair}\nChoisis le timeframe :",
+        "wait_msg": "Attends le signal, frere • • •",
+        "analyzing_msg": "Analyse {pair} [{tf}] (70% tech / 30% random) • • •",
+        "unlimited": "Illimite (Admin)",
+        "trial_left": "{left} essai(s) gratuit(s) restant(s) sur {limit}",
+        "active_vip": "Actif (Autorise)",
+        "locked_msg": (
+            "Tes 5 essais gratuits sont utilises.\n"
+            "Activation requise (10$ / 20$ selon formule).\n\n"
+            "Pour activer immediatement sans setup :\n"
+            "Envoie le code d'activation dans le chat (ex: {code}) ou contacte @{admin}."
+        ),
+        "activated_ok": "Compte autorise immediatement ! Tu as maintenant acces aux signaux.",
+        "code_invalid": "Code invalide. Verifie le code ou contacte @{admin}.",
+        "faq_text": (
+            "FAQ :\n"
+            "- 5 essais gratuits pour tester le bot.\n"
+            "- 70% indicateurs techniques + 30% composante aleatoire.\n"
+            "- Aucun signal n'est garanti a 100%."
+        ),
+        "support_text": "Support & contact direct : @{admin}",
+    },
+    "en": {
+        "choose_lang": "Choose a language / Choisis une langue :",
+        "lang_set": "Language set to: English.",
+        "home_title": "B2K Signal Engine",
+        "home_body": (
+            "Model: 70% technical analysis / 30% random\n"
+            "Free trials: 5 signals\n"
+            "Promo code: {promo}\n"
+            "Admin: @{admin}\n\n"
+            "Note: short-term signals always carry uncertainty."
+        ),
+        "btn_signal": "Get signal",
+        "btn_account": "My account",
+        "btn_activate": "Activate / Deposit",
+        "btn_promo": "Link & Promo",
+        "btn_faq": "FAQ",
+        "btn_support": "Support",
+        "btn_admin": "Contact Admin",
+        "btn_lang": "EN / FR",
+        "btn_back": "Back",
+        "btn_otc": "OTC Pairs",
+        "btn_crypto": "Crypto Pairs",
+        "btn_another": "Another signal",
+        "market_prompt": "Choose market:",
+        "pair_prompt": "Choose a pair ({cat}):",
+        "tf_prompt": "Pair: {pair}\nChoose timeframe:",
+        "wait_msg": "Wait for the signal, bro • • •",
+        "analyzing_msg": "Analyzing {pair} [{tf}] (70% tech / 30% random) • • •",
+        "unlimited": "Unlimited (Admin)",
+        "trial_left": "{left} free trial(s) left out of {limit}",
+        "active_vip": "Active (Authorized)",
+        "locked_msg": (
+            "Your 5 free trials have been used.\n"
+            "Activation required ($10 / $20 plan).\n\n"
+            "Instant activation with zero setup:\n"
+            "Send your activation code here (e.g. {code}) or contact @{admin}."
+        ),
+        "activated_ok": "Account authorized immediately! You can now generate signals.",
+        "code_invalid": "Invalid code. Check the code or contact @{admin}.",
+        "faq_text": (
+            "FAQ:\n"
+            "- 5 free trials for new users.\n"
+            "- 70% technical indicators + 30% random component.\n"
+            "- No signal is 100% guaranteed."
+        ),
+        "support_text": "Direct support: @{admin}",
+    },
+}
+
+
+# ───────────────────────────── État Utilisateur & Accès ─────────────────────────────
+class AccessManager:
+    def __init__(self):
+        self.lang: dict[int, str] = {}
+        self.used_trials: dict[int, int] = {}
+        self.authorized: set[int] = set()
+        self.awaiting_code: set[int] = set()
+
+    def get_lang(self, user_id: int) -> str:
+        return self.lang.get(user_id, "fr")
+
+    def is_admin(self, user_id: int, username: str | None) -> bool:
+        if username and username.lstrip("@").lower() == ADMIN_USERNAME.lower():
+            return True
+        return user_id in self.authorized and user_id == 0
+
+    def can_generate(self, user_id: int, username: str | None) -> bool:
+        if self.is_admin(user_id, username) or user_id in self.authorized:
+            return True
+        return self.used_trials.get(user_id, 0) < FREE_TRIALS_LIMIT
+
+    def consume_trial(self, user_id: int, username: str | None):
+        if not self.is_admin(user_id, username) and user_id not in self.authorized:
+            self.used_trials[user_id] = self.used_trials.get(user_id, 0) + 1
+
+    def status_label(self, user_id: int, username: str | None) -> str:
+        lang = self.get_lang(user_id)
+        t = TEXTS[lang]
+        if self.is_admin(user_id, username):
+            return t["unlimited"]
+        if user_id in self.authorized:
+            return t["active_vip"]
+        left = max(0, FREE_TRIALS_LIMIT - self.used_trials.get(user_id, 0))
+        return t["trial_left"].format(left=left, limit=FREE_TRIALS_LIMIT)
+
+
+access = AccessManager()
+
+
+# ───────────────────────────── Indicateurs & Flux ─────────────────────────────
 def sma(values: list[float], period: int) -> float | None:
-    if len(values) < period:
-        return None
-    return sum(values[-period:]) / period
+    return sum(values[-period:]) / period if len(values) >= period else None
 
 
 def ema_series(values: list[float], period: int) -> list[float]:
@@ -66,22 +206,19 @@ def ema_series(values: list[float], period: int) -> list[float]:
 def rsi(values: list[float], period: int = 14) -> float | None:
     if len(values) < period + 1:
         return None
-    gains = 0.0
-    losses = 0.0
+    gains = losses = 0.0
     for i in range(1, period + 1):
-        diff = values[i] - values[i - 1]
-        gains += max(diff, 0.0)
-        losses += max(-diff, 0.0)
-    avg_gain = gains / period
-    avg_loss = losses / period
+        d = values[i] - values[i - 1]
+        gains += max(d, 0.0)
+        losses += max(-d, 0.0)
+    ag, al = gains / period, losses / period
     for i in range(period + 1, len(values)):
-        diff = values[i] - values[i - 1]
-        avg_gain = (avg_gain * (period - 1) + max(diff, 0.0)) / period
-        avg_loss = (avg_loss * (period - 1) + max(-diff, 0.0)) / period
-    if avg_loss == 0.0:
+        d = values[i] - values[i - 1]
+        ag = (ag * (period - 1) + max(d, 0.0)) / period
+        al = (al * (period - 1) + max(-d, 0.0)) / period
+    if al == 0.0:
         return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+    return 100.0 - (100.0 / (1.0 + ag / al))
 
 
 def macd(values: list[float], fast: int = 12, slow: int = 26, signal: int = 9):
@@ -113,9 +250,7 @@ class CandleBuilder:
         self._last = price
 
     def series(self) -> list[float]:
-        if self._last is None:
-            return list(self.closes)
-        return list(self.closes) + [self._last]
+        return list(self.closes) + ([self._last] if self._last is not None else [])
 
 
 class BinanceFeed:
@@ -127,17 +262,19 @@ class BinanceFeed:
 
     async def fetch(self) -> dict[str, float]:
         if self.session is None or self.session.closed:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            self.session = ClientSession(timeout=ClientTimeout(total=4), headers=headers)
+            self.session = ClientSession(
+                timeout=ClientTimeout(total=4),
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
         async with self.session.get(self.URL) as resp:
             resp.raise_for_status()
             data = await resp.json()
         if not isinstance(data, list):
             return {}
         out: dict[str, float] = {}
-        for item in data:
-            sym = item.get("symbol")
-            px = item.get("price")
+        for row in data:
+            sym = row.get("symbol")
+            px = row.get("price")
             if sym in self.symbols and px is not None:
                 out[sym] = float(px)
         return out
@@ -152,20 +289,16 @@ class SignalOutput:
     pair: str
     tf: str
     direction: str
-    probability_pct: float
+    prob_pct: float
     tech_score: float
-    random_component: float
-    rsi_val: float | None
-    macd_hist: float | None
-    sma_short: float | None
-    is_otc: bool
-    uncertainty_note: str
+    rand_score: float
+    uncertainty: str
 
 
 class SignalEngine:
     def __init__(self):
         self.feed = BinanceFeed(CRYPTO_PAIRS)
-        self.series_data: dict[str, dict[str, CandleBuilder]] = {
+        self.candles = {
             pair: {tf: CandleBuilder(sec) for tf, sec in TIMEFRAMES.items()}
             for pair in ALL_PAIRS
         }
@@ -177,31 +310,26 @@ class SignalEngine:
             "EUR/CAD (OTC)": 1.51230,
             "CAD/JPY (OTC)": 102.240,
         }
-        self._otc_drift: dict[str, float] = {p: 0.0 for p in OTC_PAIRS}
-        self.last_tick: float = 0.0
+        self._drift = {p: 0.0 for p in OTC_PAIRS}
 
     async def run(self):
         next_tick = time.monotonic()
         while True:
             now = time.time()
-            self.last_tick = now
-
-            # Mise à jour des paires OTC (mouvement de micro-structure interne, sans API OTC publique)
             for pair in OTC_PAIRS:
-                step_scale = 0.00018 if "JPY" not in pair else 0.015
-                self._otc_drift[pair] = 0.85 * self._otc_drift[pair] + random.gauss(0.0, step_scale * 0.35)
-                px = max(0.0001, self.prices[pair] + self._otc_drift[pair] + random.gauss(0.0, step_scale))
+                scale = 0.00018 if "JPY" not in pair else 0.015
+                self._drift[pair] = 0.85 * self._drift[pair] + random.gauss(0.0, scale * 0.35)
+                px = max(0.0001, self.prices[pair] + self._drift[pair] + random.gauss(0.0, scale))
                 self.prices[pair] = px
-                for cb in self.series_data[pair].values():
+                for cb in self.candles[pair].values():
                     cb.push(now, px)
 
-            # Mise à jour des paires crypto via Binance
             try:
-                crypto_px = await self.feed.fetch()
-                if crypto_px:
-                    self.prices.update(crypto_px)
-                    for pair, px in crypto_px.items():
-                        for cb in self.series_data[pair].values():
+                c_px = await self.feed.fetch()
+                if c_px:
+                    self.prices.update(c_px)
+                    for pair, px in c_px.items():
+                        for cb in self.candles[pair].values():
                             cb.push(now, px)
             except Exception as exc:
                 log.warning("Erreur flux crypto : %s", exc)
@@ -209,162 +337,153 @@ class SignalEngine:
             next_tick += 1.0
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
-    def compute_signal(self, pair: str, tf: str) -> SignalOutput:
-        closes = self.series_data[pair][tf].series()
-        is_otc = "(OTC)" in pair
-
-        tech_components: list[float] = []
+    def generate(self, pair: str, tf: str, lang: str) -> SignalOutput:
+        closes = self.candles[pair][tf].series()
+        comps: list[float] = []
         r_val = rsi(closes, period=min(14, max(2, len(closes) - 1))) if len(closes) >= 4 else None
         m_val = macd(closes) if len(closes) >= 20 else None
-        s_short = sma(closes, 5) if len(closes) >= 5 else None
-        s_long = sma(closes, 12) if len(closes) >= 12 else None
+        s_f = sma(closes, 5) if len(closes) >= 5 else None
+        s_s = sma(closes, 12) if len(closes) >= 12 else None
 
         if len(closes) >= 2:
             diffs = [closes[i] - closes[i - 1] for i in range(max(1, len(closes) - 12), len(closes))]
             vol = math.sqrt(sum(d * d for d in diffs) / len(diffs)) or 1e-9
-            tech_components.append(clamp(math.tanh(sum(diffs[-3:]) / vol)))
+            comps.append(clamp(math.tanh(sum(diffs[-3:]) / vol)))
             if r_val is not None:
-                tech_components.append(clamp((50.0 - r_val) / 25.0))
+                comps.append(clamp((50.0 - r_val) / 25.0))
             if m_val is not None:
-                tech_components.append(clamp(math.tanh(m_val[2] / vol)))
-            if s_short is not None and s_long is not None:
-                tech_components.append(clamp(math.tanh((s_short - s_long) / vol)))
+                comps.append(clamp(math.tanh(m_val[2] / vol)))
+            if s_f is not None and s_s is not None:
+                comps.append(clamp(math.tanh((s_f - s_s) / vol)))
 
-        tech_score = sum(tech_components) / len(tech_components) if tech_components else 0.0
-        rand_component = random.uniform(-1.0, 1.0)
+        tech = sum(comps) / len(comps) if comps else 0.0
+        rnd = random.uniform(-1.0, 1.0)
+        score = 0.70 * tech + 0.30 * rnd
+        direction = "BUY" if score >= 0.0 else "SELL"
+        prob = round(53.0 + min(1.0, abs(score)) * 24.0, 1)
 
-        # Pondération demandée : 70 % analyse technique / 30 % composante aléatoire
-        combined = 0.70 * tech_score + 0.30 * rand_component
-        direction = "BUY (HAUSSE)" if combined >= 0.0 else "SELL (BAISSE)"
-
-        # Probabilité réaliste calibrée autour de 52 % à 78 % (jamais 100 % ni inventée)
-        strength = min(1.0, abs(combined))
-        prob_pct = round(52.0 + strength * 26.0, 1)
-
-        if is_otc:
-            uncertainty_note = (
-                "OTC interne (pas de flux public tiers) + 70% analyse / 30% aleatoire : "
-                "risque de retournement rapide et incertitude elevee."
-            )
+        if lang == "en":
+            unc = "Uncertainty active: 70% technical / 30% random, market can reverse quickly."
         else:
-            uncertainty_note = (
-                f"Flux spot ({len(closes)} pts en {tf}) + 70% analyse / 30% aleatoire : "
-                "le bruit court terme et la volatilite peuvent invalider le signal."
-            )
+            unc = "Incertitude active : 70% technique / 30% aleatoire, retournement possible."
 
-        return SignalOutput(
-            pair=pair,
-            tf=tf,
-            direction=direction,
-            probability_pct=prob_pct,
-            tech_score=round(tech_score, 3),
-            random_component=round(rand_component, 3),
-            rsi_val=round(r_val, 2) if r_val is not None else None,
-            macd_hist=round(m_val[2], 6) if m_val is not None else None,
-            sma_short=round(s_short, 5) if s_short is not None else None,
-            is_otc=is_otc,
-            uncertainty_note=uncertainty_note,
-        )
+        return SignalOutput(pair, tf, direction, prob, round(tech, 3), round(rnd, 3), unc)
 
 
 engine = SignalEngine()
 
 
-# ───────────────────────────── Serveur Web ─────────────────────────────
+# ───────────────────────────── Web Server ─────────────────────────────
 async def index(request: web.Request):
-    webapp_file = Path(__file__).parent / "webapp" / "index.html"
-    if webapp_file.exists():
-        return web.FileResponse(webapp_file)
-    return web.Response(text="B2K Signal Server actif", content_type="text/plain")
+    html_file = Path(__file__).parent / "webapp" / "index.html"
+    if html_file.exists():
+        return web.FileResponse(html_file)
+    return web.Response(text="B2K Bot Server OK", content_type="text/plain")
 
 
-async def api_signal(request: web.Request):
-    pair = request.query.get("pair", "EUR/USD (OTC)")
-    if pair not in ALL_PAIRS:
-        pair = "EUR/USD (OTC)"
-    tf = request.query.get("tf", "S15").upper()
-    if tf not in TIMEFRAMES:
-        tf = "S15"
-    sig = engine.compute_signal(pair, tf)
-    return web.json_response({
-        "price": engine.prices.get(pair),
-        "direction": sig.direction,
-        "probability_pct": sig.probability_pct,
-        "pair": sig.pair,
-        "tf": sig.tf,
-        "tech_score": sig.tech_score,
-        "random_component": sig.random_component,
-        "uncertainty": sig.uncertainty_note,
-        "promo_code": PROMO_CODE,
-        "partner_link": PARTNER_LINK,
-        "admin": f"@{ADMIN_USERNAME}",
-    })
+# ───────────────────────────── Claviers Clean ─────────────────────────────
+NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 
 
-# ───────────────────────────── Claviers Telegram ─────────────────────────────
-def start_keyboard() -> InlineKeyboardMarkup:
+def lang_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Francais", callback_data="set_lang:fr"),
+                InlineKeyboardButton(text="English", callback_data="set_lang:en"),
+            ]
+        ]
+    )
+
+
+def main_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="⚡ Générer signal", callback_data="menu:market")],
+        [InlineKeyboardButton(text=t["btn_signal"], callback_data="nav:market")],
         [
-            InlineKeyboardButton(text="🔗 Lien Partenaire", url=PARTNER_LINK),
-            InlineKeyboardButton(text="👤 Contacter Admin", url=ADMIN_URL),
+            InlineKeyboardButton(text=t["btn_account"], callback_data="nav:account"),
+            InlineKeyboardButton(text=t["btn_activate"], callback_data="nav:activate"),
         ],
+        [
+            InlineKeyboardButton(text=t["btn_promo"], url=PARTNER_LINK),
+            InlineKeyboardButton(text=t["btn_admin"], url=ADMIN_URL),
+        ],
+        [
+            InlineKeyboardButton(text=t["btn_faq"], callback_data="nav:faq"),
+            InlineKeyboardButton(text=t["btn_support"], callback_data="nav:support"),
+        ],
+        [InlineKeyboardButton(text=t["btn_lang"], callback_data="nav:lang")],
     ]
     if WEBAPP_URL.startswith("https://"):
-        rows.append([InlineKeyboardButton(text="📱 Ouvrir Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
+        rows.append([InlineKeyboardButton(text="Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def market_keyboard() -> InlineKeyboardMarkup:
+def market_keyboard(lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="💱 Paires OTC", callback_data="cat:OTC"),
-                InlineKeyboardButton(text="🪙 Paires Crypto", callback_data="cat:CRYPTO"),
+                InlineKeyboardButton(text=t["btn_otc"], callback_data="cat:OTC"),
+                InlineKeyboardButton(text=t["btn_crypto"], callback_data="cat:CRYPTO"),
             ],
-            [InlineKeyboardButton(text="⬅️ Menu principal", callback_data="menu:start")],
+            [InlineKeyboardButton(text=t["btn_back"], callback_data="nav:home")],
         ]
     )
 
 
-def pairs_keyboard(category: str) -> InlineKeyboardMarkup:
-    pairs = OTC_PAIRS if category == "OTC" else CRYPTO_PAIRS
+def pairs_keyboard(cat: str, lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
+    plist = OTC_PAIRS if cat == "OTC" else CRYPTO_PAIRS
     rows: list[list[InlineKeyboardButton]] = []
-    for i in range(0, len(pairs), 2):
-        row = [InlineKeyboardButton(text=pairs[i], callback_data=f"pick_pair:{pairs[i]}")]
-        if i + 1 < len(pairs):
-            row.append(InlineKeyboardButton(text=pairs[i + 1], callback_data=f"pick_pair:{pairs[i + 1]}"))
-        rows.append(row)
-    rows.append([InlineKeyboardButton(text="⬅️ Retour marché", callback_data="menu:market")])
+    for i in range(0, len(plist), 2):
+        r = [InlineKeyboardButton(text=plist[i], callback_data=f"pair:{plist[i]}")]
+        if i + 1 < len(plist):
+            r.append(InlineKeyboardButton(text=plist[i + 1], callback_data=f"pair:{plist[i + 1]}"))
+        rows.append(r)
+    rows.append([InlineKeyboardButton(text=t["btn_back"], callback_data="nav:market")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def timeframe_keyboard(pair: str) -> InlineKeyboardMarkup:
+def tf_keyboard(pair: str, lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="S5", callback_data=f"run_sig:{pair}:S5"),
-                InlineKeyboardButton(text="S15", callback_data=f"run_sig:{pair}:S15"),
+                InlineKeyboardButton(text="S5", callback_data=f"sig:{pair}:S5"),
+                InlineKeyboardButton(text="S15", callback_data=f"sig:{pair}:S15"),
             ],
             [
-                InlineKeyboardButton(text="S30", callback_data=f"run_sig:{pair}:S30"),
-                InlineKeyboardButton(text="M1", callback_data=f"run_sig:{pair}:M1"),
+                InlineKeyboardButton(text="S30", callback_data=f"sig:{pair}:S30"),
+                InlineKeyboardButton(text="M1", callback_data=f"sig:{pair}:M1"),
             ],
-            [InlineKeyboardButton(text="⬅️ Changer de paire", callback_data="menu:market")],
+            [InlineKeyboardButton(text=t["btn_back"], callback_data="nav:market")],
         ]
     )
 
 
-def after_signal_keyboard(pair: str, tf: str) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text="🔁 Nouveau signal", callback_data=f"run_sig:{pair}:{tf}")],
-        [
-            InlineKeyboardButton(text="📊 Autre paire / TF", callback_data="menu:market"),
-            InlineKeyboardButton(text="👤 Admin", url=ADMIN_URL),
-        ],
-        [InlineKeyboardButton(text="🔗 Lien Partenaire", url=PARTNER_LINK)],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+def signal_done_keyboard(pair: str, tf: str, lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t["btn_another"], callback_data=f"sig:{pair}:{tf}")],
+            [
+                InlineKeyboardButton(text=t["btn_signal"], callback_data="nav:market"),
+                InlineKeyboardButton(text=t["btn_admin"], url=ADMIN_URL),
+            ],
+            [InlineKeyboardButton(text=t["btn_back"], callback_data="nav:home")],
+        ]
+    )
+
+
+def back_home_keyboard(lang: str) -> InlineKeyboardMarkup:
+    t = TEXTS[lang]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t["btn_admin"], url=ADMIN_URL)],
+            [InlineKeyboardButton(text=t["btn_back"], callback_data="nav:home")],
+        ]
+    )
 
 
 # ───────────────────────────── Bot Telegram ─────────────────────────────
@@ -377,84 +496,206 @@ async def run_bot():
     dp = Dispatcher()
 
     @dp.message(CommandStart())
-    async def on_start(message: Message):
+    async def cmd_start(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        access.awaiting_code.discard(uid)
         await message.answer(
-            f"Bienvenue sur B2K Signal Engine.\n\n"
-            f"• Ponderation : 70% analyse technique / 30% aleatoire\n"
-            f"• Code promo : {PROMO_CODE}\n"
-            f"• Lien : {PARTNER_LINK}\n"
-            f"• Admin : @{ADMIN_USERNAME}\n\n"
-            f"Avertissement : analyse court terme avec incertitude reelle, aucune garantie de gain.",
-            reply_markup=start_keyboard(),
+            TEXTS["fr"]["choose_lang"],
+            reply_markup=lang_keyboard(),
+            link_preview_options=NO_PREVIEW,
         )
 
-    @dp.callback_query(F.data == "menu:start")
-    async def on_menu_start(callback: CallbackQuery):
-        await callback.answer()
+    @dp.message(Command("activate"))
+    async def cmd_activate_admin(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        uname = message.from_user.username if message.from_user else None
+        if not access.is_admin(uid, uname):
+            return
+        parts = (message.text or "").split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            await message.answer("Usage : /activate <user_id>")
+            return
+        target_id = int(parts[1])
+        access.authorized.add(target_id)
+        await message.answer(f"Utilisateur {target_id} autorise immediatement.")
+
+    @dp.message(F.text)
+    async def on_text_input(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        lang = access.get_lang(uid)
+        t = TEXTS[lang]
+        txt = (message.text or "").strip()
+        if uid in access.awaiting_code:
+            if txt == ACTIVATION_CODE:
+                access.authorized.add(uid)
+                access.awaiting_code.discard(uid)
+                await message.answer(
+                    t["activated_ok"],
+                    reply_markup=main_menu_keyboard(lang),
+                    link_preview_options=NO_PREVIEW,
+                )
+            else:
+                await message.answer(
+                    t["code_invalid"].format(admin=ADMIN_USERNAME),
+                    reply_markup=back_home_keyboard(lang),
+                    link_preview_options=NO_PREVIEW,
+                )
+
+    @dp.callback_query(F.data.startswith("set_lang:"))
+    async def cb_set_lang(callback: CallbackQuery):
+        uid = callback.from_user.id
+        lang = callback.data.split(":", 1)[1]
+        if lang not in ("fr", "en"):
+            lang = "fr"
+        access.lang[uid] = lang
+        t = TEXTS[lang]
+        await callback.answer(t["lang_set"])
         await callback.message.edit_text(
-            f"Menu Principal — B2K Signal Engine\n\n"
-            f"• Code promo : {PROMO_CODE}\n"
-            f"• Lien : {PARTNER_LINK}\n"
-            f"• Admin : @{ADMIN_USERNAME}",
-            reply_markup=start_keyboard(),
+            f"{t['home_title']}\n\n{t['home_body'].format(promo=PROMO_CODE, admin=ADMIN_USERNAME)}",
+            reply_markup=main_menu_keyboard(lang),
+            link_preview_options=NO_PREVIEW,
         )
 
-    @dp.callback_query(F.data == "menu:market")
-    async def on_menu_market(callback: CallbackQuery):
+    @dp.callback_query(F.data.startswith("nav:"))
+    async def cb_nav(callback: CallbackQuery):
+        uid = callback.from_user.id
+        uname = callback.from_user.username
+        lang = access.get_lang(uid)
+        t = TEXTS[lang]
+        dest = callback.data.split(":", 1)[1]
         await callback.answer()
-        await callback.message.edit_text(
-            "Choisis le type de marche (OTC ou Crypto) :",
-            reply_markup=market_keyboard(),
-        )
+
+        if dest == "lang":
+            await callback.message.edit_text(
+                t["choose_lang"],
+                reply_markup=lang_keyboard(),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "home":
+            access.awaiting_code.discard(uid)
+            await callback.message.edit_text(
+                f"{t['home_title']}\n\n{t['home_body'].format(promo=PROMO_CODE, admin=ADMIN_USERNAME)}",
+                reply_markup=main_menu_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "market":
+            if not access.can_generate(uid, uname):
+                access.awaiting_code.add(uid)
+                await callback.message.edit_text(
+                    t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
+                    reply_markup=back_home_keyboard(lang),
+                    link_preview_options=NO_PREVIEW,
+                )
+                return
+            await callback.message.edit_text(
+                t["market_prompt"],
+                reply_markup=market_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "account":
+            st = access.status_label(uid, uname)
+            await callback.message.edit_text(
+                f"ID: {uid}\nStatus: {st}\nPromo: {PROMO_CODE}",
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "activate":
+            access.awaiting_code.add(uid)
+            await callback.message.edit_text(
+                t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "faq":
+            await callback.message.edit_text(
+                t["faq_text"],
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+        elif dest == "support":
+            await callback.message.edit_text(
+                t["support_text"].format(admin=ADMIN_USERNAME),
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
 
     @dp.callback_query(F.data.startswith("cat:"))
-    async def on_category(callback: CallbackQuery):
+    async def cb_cat(callback: CallbackQuery):
+        uid = callback.from_user.id
+        lang = access.get_lang(uid)
+        t = TEXTS[lang]
         cat = callback.data.split(":", 1)[1]
         await callback.answer()
         await callback.message.edit_text(
-            f"Selectionne une paire ({cat}) :",
-            reply_markup=pairs_keyboard(cat),
+            t["pair_prompt"].format(cat=cat),
+            reply_markup=pairs_keyboard(cat, lang),
+            link_preview_options=NO_PREVIEW,
         )
 
-    @dp.callback_query(F.data.startswith("pick_pair:"))
-    async def on_pick_pair(callback: CallbackQuery):
+    @dp.callback_query(F.data.startswith("pair:"))
+    async def cb_pair(callback: CallbackQuery):
+        uid = callback.from_user.id
+        lang = access.get_lang(uid)
+        t = TEXTS[lang]
         pair = callback.data.split(":", 1)[1]
         await callback.answer()
         await callback.message.edit_text(
-            f"Paire selectionnee : {pair}\nChoisis le timeframe (S5, S15, S30 ou M1) :",
-            reply_markup=timeframe_keyboard(pair),
+            t["tf_prompt"].format(pair=pair),
+            reply_markup=tf_keyboard(pair, lang),
+            link_preview_options=NO_PREVIEW,
         )
 
-    @dp.callback_query(F.data.startswith("run_sig:"))
-    async def on_run_signal(callback: CallbackQuery):
+    @dp.callback_query(F.data.startswith("sig:"))
+    async def cb_sig(callback: CallbackQuery):
+        uid = callback.from_user.id
+        uname = callback.from_user.username
+        lang = access.get_lang(uid)
+        t = TEXTS[lang]
+
+        if not access.can_generate(uid, uname):
+            access.awaiting_code.add(uid)
+            await callback.answer()
+            await callback.message.edit_text(
+                t["locked_msg"].format(code=ACTIVATION_CODE, admin=ADMIN_USERNAME),
+                reply_markup=back_home_keyboard(lang),
+                link_preview_options=NO_PREVIEW,
+            )
+            return
+
         _, pair, tf = callback.data.split(":", 2)
-        await callback.answer("Attends le signal, frere")
-        wait_msg = await callback.message.answer("Attends le signal, frere • • •")
-        await asyncio.sleep(1.0)
-        await wait_msg.edit_text(f"Analyse de {pair} [{tf}] (70% tech / 30% random) • • •")
-        await asyncio.sleep(1.0)
+        access.consume_trial(uid, uname)
+        await callback.answer(t["wait_msg"])
 
-        sig = engine.compute_signal(pair, tf)
-        utc_now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+        wait_msg = await callback.message.answer(
+            t["wait_msg"],
+            link_preview_options=NO_PREVIEW,
+        )
+        await asyncio.sleep(0.9)
+        await wait_msg.edit_text(
+            t["analyzing_msg"].format(pair=pair, tf=tf),
+            link_preview_options=NO_PREVIEW,
+        )
+        await asyncio.sleep(0.9)
+
+        sig = engine.generate(pair, tf, lang)
+        now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
         px = engine.prices.get(pair)
-        px_str = f"{px:.5f}" if px is not None and px < 50 else (f"{px:.2f}" if px is not None else "N/A")
-
-        rsi_str = f"{sig.rsi_val}" if sig.rsi_val is not None else "N/A"
-        macd_str = f"{sig.macd_hist}" if sig.macd_hist is not None else "N/A"
+        px_fmt = f"{px:.5f}" if px is not None and px < 50 else (f"{px:.2f}" if px is not None else "N/A")
 
         report = (
-            f"SIGNAL — {sig.pair} | {sig.tf}\n"
-            f"Direction : {sig.direction}\n"
-            f"Probabilite estimee : {sig.probability_pct}%\n"
-            f"Prix reference : {px_str} | Heure UTC : {utc_now}\n"
-            f"Details : Score tech {sig.tech_score} (70%) + Random {sig.random_component} (30%)\n"
-            f"Indicateurs : RSI={rsi_str} | MACD_Hist={macd_str}\n\n"
-            f"Incertitude : {sig.uncertainty_note}\n"
-            f"Code promo : {PROMO_CODE}\n"
-            f"Lien : {PARTNER_LINK}\n"
-            f"Admin : @{ADMIN_USERNAME}"
+            f"{sig.pair} | {sig.tf}\n"
+            f"Direction: {sig.direction}\n"
+            f"Prob: {sig.prob_pct}%\n"
+            f"Price: {px_fmt} | UTC: {now_utc}\n"
+            f"Mix: 70% tech ({sig.tech_score}) + 30% rand ({sig.rand_score})\n"
+            f"{sig.uncertainty}\n"
+            f"Promo: {PROMO_CODE}"
         )
-        await wait_msg.edit_text(report, reply_markup=after_signal_keyboard(pair, tf))
+        await wait_msg.edit_text(
+            report,
+            reply_markup=signal_done_keyboard(pair, tf, lang),
+            link_preview_options=NO_PREVIEW,
+        )
 
     try:
         await dp.start_polling(bot)
@@ -466,14 +707,10 @@ async def run_bot():
 async def main():
     app = web.Application()
     app.router.add_get("/", index)
-    app.router.add_get("/api/signal", api_signal)
-
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
+    await web.TCPSite(runner, "0.0.0.0", PORT).start()
     log.info("Serveur démarré sur le port %s", PORT)
-
     await asyncio.gather(engine.run(), run_bot())
 
 
