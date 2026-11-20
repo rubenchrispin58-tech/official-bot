@@ -21,7 +21,7 @@ from aiogram.types import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-log = logging.getLogger("b2k_clean_bot")
+log = logging.getLogger("b2k_stable_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
@@ -52,13 +52,13 @@ ALL_PAIRS = OTC_PAIRS + MARKET_PICKS
 TIMEFRAMES = {"S5": 5, "S15": 15, "S30": 30, "M1": 60}
 
 
-# ───────────────────────────── Auto-Suppression des Anciens Messages ─────────────────────────────
+# ───────────────────────────── Auto-Suppression Sécurisée ─────────────────────────────
 class ChatCleaner:
     def __init__(self):
         self.last_bot_msg: dict[int, int] = {}
 
     async def purge_previous(self, bot: Bot, chat_id: int):
-        prev_id = self.last_bot_msg.get(chat_id)
+        prev_id = self.last_bot_msg.pop(chat_id, None)
         if prev_id:
             try:
                 await bot.delete_message(chat_id=chat_id, message_id=prev_id)
@@ -71,16 +71,20 @@ class ChatCleaner:
         chat_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> Message:
+    ) -> Message | None:
         await self.purge_previous(bot, chat_id)
-        msg = await bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=reply_markup,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
-        self.last_bot_msg[chat_id] = msg.message_id
-        return msg
+        try:
+            msg = await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=reply_markup,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+            self.last_bot_msg[chat_id] = msg.message_id
+            return msg
+        except Exception as exc:
+            log.warning("Erreur envoi message chat %s : %s", chat_id, exc)
+            return None
 
     async def edit_clean(
         self,
@@ -89,16 +93,19 @@ class ChatCleaner:
         message_id: int,
         text: str,
         reply_markup: InlineKeyboardMarkup | None = None,
-    ) -> Message:
-        msg = await bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text=text,
-            reply_markup=reply_markup,
-            link_preview_options=LinkPreviewOptions(is_disabled=True),
-        )
-        self.last_bot_msg[chat_id] = msg.message_id
-        return msg
+    ) -> Message | None:
+        try:
+            msg = await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=reply_markup,
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+            self.last_bot_msg[chat_id] = msg.message_id
+            return msg
+        except Exception:
+            return await self.send_clean(bot, chat_id, text, reply_markup=reply_markup)
 
 
 cleaner = ChatCleaner()
@@ -136,7 +143,7 @@ class AccessManager:
         if self.is_admin(username):
             return "Illimite (Admin)" if lang == "fr" else "Unlimited (Admin)"
         if uid in self.authorized_ids:
-            return "Actif (Autorise)" if lang == "fr" else "Active (Authorized)"
+            return "Actif" if lang == "fr" else "Active"
         left = max(0, FREE_TRIALS_LIMIT - self.used_trials.get(uid, 0))
         if lang == "en":
             return f"{left} free trial(s) left out of {FREE_TRIALS_LIMIT}"
@@ -212,7 +219,7 @@ class SeriesTracker:
 class SignalCard:
     pair: str
     tf: str
-    action: str  # "BUY" ou "SELL"
+    action: str
     prob_pct: float
     trend_label: str
     uncertainty: str
@@ -246,12 +253,15 @@ class MarketAnalyzer:
     async def run(self):
         next_t = time.monotonic()
         while True:
-            now = time.time()
-            for pair_map in self.trackers.values():
-                for tr in pair_map.values():
-                    tr.tick(now)
+            try:
+                now = time.time()
+                for pair_map in self.trackers.values():
+                    for tr in pair_map.values():
+                        tr.tick(now)
+            except Exception as exc:
+                log.warning("Erreur tick analyseur : %s", exc)
             next_t += 1.0
-            await asyncio.sleep(max(0.0, next_t - time.monotonic()))
+            await asyncio.sleep(max(0.05, next_t - time.monotonic()))
 
     def analyze(self, pair: str, tf: str, lang: str) -> SignalCard:
         closes = self.trackers[pair][tf].series()
@@ -272,7 +282,6 @@ class MarketAnalyzer:
 
         tech_score = sum(tech_signals) / len(tech_signals) if tech_signals else 0.0
 
-        # 20 % aléatoire orienté selon la tendance de marché détectée
         trend_dir = 1.0 if tech_score >= 0.0 else -1.0
         rand_score = clamp(trend_dir * abs(random.gauss(0.35, 0.45)) + random.uniform(-0.35, 0.35))
 
@@ -287,7 +296,7 @@ class MarketAnalyzer:
                 trend_txt = "Bearish trend"
             else:
                 trend_txt = "Range / sideways"
-            unc = "Uncertainty: market noise and reversals remain possible."
+            unc = "Risk notice: every signal carries risk and is not 100% guaranteed."
         else:
             if tech_score > 0.12:
                 trend_txt = "Tendance haussiere"
@@ -295,7 +304,7 @@ class MarketAnalyzer:
                 trend_txt = "Tendance baissiere"
             else:
                 trend_txt = "Zone de range"
-            unc = "Incertitude : les retournements et le bruit de marche restent possibles."
+            unc = "Rappel : tout signal comporte des risques et n'est pas garanti a 100%."
 
         return SignalCard(pair, tf, action, prob, trend_txt, unc)
 
@@ -311,7 +320,11 @@ async def index(request: web.Request):
     return web.Response(text="B2K Bot Active", content_type="text/plain")
 
 
-# ───────────────────────────── Claviers Stylés ─────────────────────────────
+async def health(request: web.Request):
+    return web.Response(text="OK", status=200)
+
+
+# ───────────────────────────── Claviers ─────────────────────────────
 def lang_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -434,6 +447,34 @@ def back_home_kb(lang: str) -> InlineKeyboardMarkup:
     )
 
 
+def start_welcome_text(lang: str) -> str:
+    if lang == "en":
+        return (
+            "✨ B2K Signal Engine\n\n"
+            "• 5 free trials included\n\n"
+            "⚠️ Every signal carries risk and is not 100% guaranteed."
+        )
+    return (
+        "✨ B2K Signal Engine\n\n"
+        "• 5 essais gratuits inclus\n\n"
+        "⚠️ Tout signal comporte des risques et n'est pas garanti a 100%."
+    )
+
+
+def locked_signup_text(lang: str) -> str:
+    if lang == "en":
+        return (
+            "🔒 Free trials finished (5/5 used)\n\n"
+            f"• Link: {PARTNER_LINK}\n"
+            f"• Promo code: {PROMO_CODE}"
+        )
+    return (
+        "🔒 Essais gratuits termines (5/5 utilises)\n\n"
+        f"• Lien : {PARTNER_LINK}\n"
+        f"• Code promo : {PROMO_CODE}"
+    )
+
+
 # ───────────────────────────── Bot Telegram ─────────────────────────────
 async def run_bot():
     if not BOT_TOKEN:
@@ -445,10 +486,9 @@ async def run_bot():
 
     @dp.message(CommandStart())
     async def on_start(message: Message):
-        cid = message.chat.id
         await cleaner.send_clean(
             bot,
-            cid,
+            message.chat.id,
             "🌐 Choisis une langue / Choose a language :",
             reply_markup=lang_kb(),
         )
@@ -486,25 +526,7 @@ async def run_bot():
         lang = callback.data.split(":", 1)[1]
         access.lang[uid] = lang
         await callback.answer()
-        if lang == "en":
-            txt = (
-                "✨ B2K Signal Engine\n\n"
-                "• 5 free trials included\n"
-                f"• Promo code: {PROMO_CODE}\n"
-                f"• Link: {PARTNER_LINK}\n"
-                f"• Admin: @{ADMIN_USERNAME}\n\n"
-                "⚠️ Signals always carry uncertainty."
-            )
-        else:
-            txt = (
-                "✨ B2K Signal Engine\n\n"
-                "• 5 essais gratuits inclus\n"
-                f"• Code promo : {PROMO_CODE}\n"
-                f"• Lien : {PARTNER_LINK}\n"
-                f"• Admin : @{ADMIN_USERNAME}\n\n"
-                "⚠️ Tout signal comporte une part d'incertitude."
-            )
-        await cleaner.send_clean(bot, cid, txt, reply_markup=home_kb(lang))
+        await cleaner.send_clean(bot, cid, start_welcome_text(lang), reply_markup=home_kb(lang))
 
     @dp.callback_query(F.data.startswith("go:"))
     async def cb_go(callback: CallbackQuery):
@@ -518,26 +540,10 @@ async def run_bot():
         if dest == "lang":
             await cleaner.send_clean(bot, cid, "🌐 Choisis une langue / Choose a language :", reply_markup=lang_kb())
         elif dest == "home":
-            if lang == "en":
-                txt = (
-                    "✨ B2K Signal Engine\n\n"
-                    f"• Promo code: {PROMO_CODE}\n"
-                    f"• Link: {PARTNER_LINK}\n"
-                    f"• Admin: @{ADMIN_USERNAME}\n\n"
-                    "⚠️ Signals always carry uncertainty."
-                )
-            else:
-                txt = (
-                    "✨ B2K Signal Engine\n\n"
-                    f"• Code promo : {PROMO_CODE}\n"
-                    f"• Lien : {PARTNER_LINK}\n"
-                    f"• Admin : @{ADMIN_USERNAME}\n\n"
-                    "⚠️ Tout signal comporte une part d'incertitude."
-                )
-            await cleaner.send_clean(bot, cid, txt, reply_markup=home_kb(lang))
+            await cleaner.send_clean(bot, cid, start_welcome_text(lang), reply_markup=home_kb(lang))
         elif dest == "market":
             if not access.can_generate(uid, uname):
-                await show_locked(bot, cid, lang)
+                await cleaner.send_clean(bot, cid, locked_signup_text(lang), reply_markup=back_home_kb(lang))
                 return
             prompt = "📊 Choose a market:" if lang == "en" else "📊 Choisis le marche :"
             await cleaner.send_clean(bot, cid, prompt, reply_markup=market_kb(lang))
@@ -549,7 +555,7 @@ async def run_bot():
                 txt = f"💎 Mon compte\n• ID : {uid}\n• Statut : {st}\n• Promo : {PROMO_CODE}\n• Lien : {PARTNER_LINK}"
             await cleaner.send_clean(bot, cid, txt, reply_markup=back_home_kb(lang))
         elif dest == "activate":
-            await show_locked(bot, cid, lang)
+            await cleaner.send_clean(bot, cid, locked_signup_text(lang), reply_markup=back_home_kb(lang))
         elif dest == "faq":
             utc_now = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
             if lang == "en":
@@ -557,7 +563,7 @@ async def run_bot():
                     "❓ FAQ & Market Guide\n\n"
                     "• Engine mix: 80% technical analysis + 20% random component aligned with market trend.\n"
                     f"• Server time (UTC): {utc_now}\n"
-                    "• Timeframes: S15 is often smoother than S5; adapt to the selected market & trend.\n"
+                    "• Timeframes: S15 is often steadier than S5; watch your selected market & trend.\n"
                     "• Risk guide: keep position sizes controlled, avoid chasing losses, and remember no signal is 100% guaranteed."
                 )
             else:
@@ -577,25 +583,6 @@ async def run_bot():
             )
             await cleaner.send_clean(bot, cid, txt, reply_markup=back_home_kb(lang))
 
-    async def show_locked(bot: Bot, cid: int, lang: str):
-        if lang == "en":
-            txt = (
-                "🔒 Free trials finished (5/5 used)\n\n"
-                "Create an account using the promo code and partner link below to unlock full signals:\n"
-                f"• Promo code: {PROMO_CODE}\n"
-                f"• Link: {PARTNER_LINK}\n"
-                f"• Deposit $10 into your account via the promo code and send $10 to admin @{ADMIN_USERNAME}, then ask @{ADMIN_USERNAME} to add your ID."
-            )
-        else:
-            txt = (
-                "🔒 Essais gratuits termines (5/5 utilises)\n\n"
-                "Cree un compte pour avoir acces aux signaux :\n"
-                f"• Code promo : {PROMO_CODE}\n"
-                f"• Lien : {PARTNER_LINK}\n"
-                f"• Mets 10$ sur ton compte via ce code promo et envoie 10$ a l'administrateur (@{ADMIN_USERNAME}) pour activer l'acces au bot."
-            )
-        await cleaner.send_clean(bot, cid, txt, reply_markup=back_home_kb(lang))
-
     @dp.callback_query(F.data.startswith("cat:"))
     async def cb_cat(callback: CallbackQuery):
         uid = callback.from_user.id
@@ -603,7 +590,10 @@ async def run_bot():
         lang = access.get_lang(uid)
         cat = callback.data.split(":", 1)[1]
         await callback.answer()
-        label = "OTC Pairs" if (cat == "OTC" and lang == "en") else ("Paires OTC" if cat == "OTC" else ("Markets" if lang == "en" else "Marches"))
+        label = (
+            "OTC Pairs" if (cat == "OTC" and lang == "en")
+            else ("Paires OTC" if cat == "OTC" else ("Markets" if lang == "en" else "Marches"))
+        )
         txt = f"Select pair ({label}):" if lang == "en" else f"Choisis une paire ({label}) :"
         await cleaner.send_clean(bot, cid, txt, reply_markup=pairs_kb(cat, lang))
 
@@ -626,7 +616,7 @@ async def run_bot():
 
         if not access.can_generate(uid, uname):
             await callback.answer()
-            await show_locked(bot, cid, lang)
+            await cleaner.send_clean(bot, cid, locked_signup_text(lang), reply_markup=back_home_kb(lang))
             return
 
         _, pair, tf = callback.data.split(":", 2)
@@ -635,11 +625,15 @@ async def run_bot():
 
         wait_txt = "⏳ Wait for the signal, bro • • •" if lang == "en" else "⏳ Attends le signal, frere • • •"
         msg = await cleaner.send_clean(bot, cid, wait_txt)
-        await asyncio.sleep(0.8)
+        if not msg:
+            return
+        await asyncio.sleep(0.7)
 
         scan_txt = f"🔍 Analyzing {pair} [{tf}] • • •" if lang == "en" else f"🔍 Analyse de {pair} [{tf}] • • •"
         msg = await cleaner.edit_clean(bot, cid, msg.message_id, scan_txt)
-        await asyncio.sleep(0.8)
+        if not msg:
+            return
+        await asyncio.sleep(0.7)
 
         card = analyzer.analyze(pair, tf, lang)
         badge = "🟢 BUY" if card.action == "BUY" else "🔴 SELL"
@@ -665,19 +659,22 @@ async def run_bot():
 
         await cleaner.edit_clean(bot, cid, msg.message_id, final_txt, reply_markup=result_kb(pair, tf, lang))
 
-    try:
-        await dp.start_polling(bot)
-    finally:
-        await bot.session.close()
+    while True:
+        try:
+            await dp.start_polling(bot, drop_pending_updates=True)
+        except Exception as exc:
+            log.error("Interruption polling bot, reprise dans 4s : %s", exc)
+            await asyncio.sleep(4)
 
 
 async def main():
     app = web.Application()
     app.router.add_get("/", index)
+    app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    log.info("Serveur démarré sur le port %s", PORT)
+    log.info("Serveur web démarré sur le port %s", PORT)
     await asyncio.gather(analyzer.run(), run_bot())
 
 
