@@ -1,5 +1,7 @@
 import asyncio
 import datetime
+import io
+import json
 import logging
 import math
 import os
@@ -13,6 +15,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -20,13 +23,14 @@ from aiogram.types import (
     Message,
     WebAppInfo,
 )
+from PIL import Image, ImageDraw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 log = logging.getLogger("b2k_stable_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
-WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()  # ex: https://ton-service.onrender.com/webapp
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()
 
 ADMIN_USERNAME = "b2k_ruben"
 ADMIN_URL = f"https://t.me/{ADMIN_USERNAME}"
@@ -34,6 +38,9 @@ PROMO_CODE = "FRIENDXYZLOERADB"
 PARTNER_LINK = "https://pocket-friends.co/r/xyzloeradb"
 
 FREE_TRIALS_LIMIT = 5
+STATE_FILE = Path(__file__).parent / "bot_state.json"
+ASSETS_DIR = Path(__file__).parent / "assets"
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 OTC_PAIRS = [
     "GBP/USD OTC",
@@ -52,6 +59,86 @@ MARKET_PICKS = [
 ]
 ALL_PAIRS = OTC_PAIRS + MARKET_PICKS
 TIMEFRAMES = {"S5": 5, "S15": 15, "S30": 30, "M1": 60}
+
+
+# ───────────────────────────── Sauvegarde Persistante ─────────────────────────────
+class PersistentState:
+    def __init__(self, path: Path):
+        self.path = path
+        self.data = {
+            "lang": {},             # str(uid) -> "fr" | "en"
+            "used_trials": {},      # str(uid) -> int
+            "authorized_ids": [],   # list[int]
+            "pending_claims": {},   # str(uid) -> {"ref_id": str, "declared_10": bool, "ts": int}
+            "photo_file_ids": {},   # "buy" | "sell" | "menu" -> file_id
+        }
+        self.load()
+
+    def load(self):
+        if not self.path.exists():
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                self.data.update(loaded)
+        except Exception as exc:
+            log.warning("Erreur lecture %s : %s", self.path, exc)
+
+    def save(self):
+        try:
+            self.path.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            log.warning("Erreur sauvegarde %s : %s", self.path, exc)
+
+
+store = PersistentState(STATE_FILE)
+
+
+# ───────────────────────────── Visuels /set_photo_* ─────────────────────────────
+def build_default_banner(kind: str) -> bytes:
+    w, h = 900, 300
+    if kind == "buy":
+        bg, accent = (12, 42, 31), (34, 197, 94)
+    elif kind == "sell":
+        bg, accent = (48, 16, 24), (239, 68, 68)
+    else:
+        bg, accent = (15, 23, 42), (59, 130, 246)
+    img = Image.new("RGB", (w, h), bg)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([14, 14, w - 14, h - 14], outline=accent, width=5)
+    draw.rectangle([46, 68, w - 46, h - 68], fill=(24, 34, 52), outline=accent, width=2)
+    draw.rectangle([100, 135, w - 100, 175], fill=(40, 52, 74))
+    draw.rectangle([100, 135, 100 + int((w - 200) * 0.75), 175], fill=accent)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+async def get_slot_photo(bot: Bot, slot: str) -> BufferedInputFile:
+    for ext in ("jpg", "png"):
+        p = ASSETS_DIR / f"{slot}.{ext}"
+        if p.exists():
+            return BufferedInputFile(p.read_bytes(), filename=p.name)
+    fid = store.data["photo_file_ids"].get(slot)
+    if fid:
+        try:
+            buf = io.BytesIO()
+            await bot.download(fid, destination=buf)
+            return BufferedInputFile(buf.getvalue(), filename=f"{slot}.jpg")
+        except Exception:
+            pass
+    return BufferedInputFile(build_default_banner(slot), filename=f"{slot}.png")
+
+
+def parse_photo_cmd(text: str) -> str | None:
+    c = text.strip().lower()
+    if c in ("/set_photo_buy", "/set photo buy", "set photo buy"):
+        return "buy"
+    if c in ("/set_photo_sell", "/set photo sell", "set photo sell"):
+        return "sell"
+    if c in ("/set_photo_menu", "/set photo menu", "set photo menu"):
+        return "menu"
+    return None
 
 
 # ───────────────────────────── Auto-Suppression Sécurisée ─────────────────────────────
@@ -88,6 +175,28 @@ class ChatCleaner:
             log.warning("Erreur envoi message chat %s : %s", chat_id, exc)
             return None
 
+    async def send_photo_clean(
+        self,
+        bot: Bot,
+        chat_id: int,
+        photo: BufferedInputFile,
+        caption: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> Message | None:
+        await self.purge_previous(bot, chat_id)
+        try:
+            msg = await bot.send_photo(
+                chat_id=chat_id,
+                photo=photo,
+                caption=caption,
+                reply_markup=reply_markup,
+            )
+            self.last_bot_msg[chat_id] = msg.message_id
+            return msg
+        except Exception as exc:
+            log.warning("Erreur envoi photo chat %s : %s", chat_id, exc)
+            return None
+
     async def edit_clean(
         self,
         bot: Bot,
@@ -113,40 +222,66 @@ class ChatCleaner:
 cleaner = ChatCleaner()
 
 
-# ───────────────────────────── Accès & Utilisateurs (/add /del) ─────────────────────────────
+# ───────────────────────────── Accès & Vérification 10$ ─────────────────────────────
 class AccessManager:
     def __init__(self):
-        self.lang: dict[int, str] = {}
-        self.used_trials: dict[int, int] = {}
-        self.authorized_ids: set[int] = set()
+        self.awaiting_photo: dict[int, str] = {}
+        self.awaiting_verify: set[int] = set()
+
+    def has_saved_lang(self, uid: int) -> bool:
+        return str(uid) in store.data["lang"]
 
     def get_lang(self, uid: int) -> str:
-        return self.lang.get(uid, "fr")
+        return store.data["lang"].get(str(uid), "fr")
+
+    def set_lang(self, uid: int, lang: str):
+        store.data["lang"][str(uid)] = lang
+        store.save()
 
     def is_admin(self, username: str | None) -> bool:
         return bool(username and username.lstrip("@").lower() == ADMIN_USERNAME.lower())
 
     def add_user(self, target_id: int):
-        self.authorized_ids.add(target_id)
+        auth = set(store.data["authorized_ids"])
+        auth.add(target_id)
+        store.data["authorized_ids"] = sorted(auth)
+        store.data["pending_claims"].pop(str(target_id), None)
+        store.save()
 
     def del_user(self, target_id: int):
-        self.authorized_ids.discard(target_id)
+        auth = set(store.data["authorized_ids"])
+        auth.discard(target_id)
+        store.data["authorized_ids"] = sorted(auth)
+        store.save()
+
+    def submit_claim(self, uid: int, ref_code: str):
+        store.data["pending_claims"][str(uid)] = {
+            "ref_id": ref_code.strip(),
+            "declared_10": True,
+            "ts": int(time.time()),
+        }
+        store.save()
 
     def can_generate(self, uid: int, username: str | None) -> bool:
-        if self.is_admin(username) or uid in self.authorized_ids:
+        if self.is_admin(username) or uid in set(store.data["authorized_ids"]):
             return True
-        return self.used_trials.get(uid, 0) < FREE_TRIALS_LIMIT
+        used = int(store.data["used_trials"].get(str(uid), 0))
+        return used < FREE_TRIALS_LIMIT
 
     def consume_trial(self, uid: int, username: str | None):
-        if not self.is_admin(username) and uid not in self.authorized_ids:
-            self.used_trials[uid] = self.used_trials.get(uid, 0) + 1
+        if not self.is_admin(username) and uid not in set(store.data["authorized_ids"]):
+            k = str(uid)
+            store.data["used_trials"][k] = int(store.data["used_trials"].get(k, 0)) + 1
+            store.save()
 
     def status_text(self, uid: int, username: str | None, lang: str) -> str:
         if self.is_admin(username):
             return "Illimite (Admin)" if lang == "fr" else "Unlimited (Admin)"
-        if uid in self.authorized_ids:
-            return "Actif" if lang == "fr" else "Active"
-        left = max(0, FREE_TRIALS_LIMIT - self.used_trials.get(uid, 0))
+        if uid in set(store.data["authorized_ids"]):
+            return "Actif (10$ verifie)" if lang == "fr" else "Active ($10 verified)"
+        if str(uid) in store.data["pending_claims"]:
+            return "En attente de validation admin" if lang == "fr" else "Pending admin check"
+        left = max(0, FREE_TRIALS_LIMIT - int(store.data["used_trials"].get(str(uid), 0)))
         if lang == "en":
             return f"{left} free trial(s) left out of {FREE_TRIALS_LIMIT}"
         return f"{left} essai(s) gratuit(s) restant(s) sur {FREE_TRIALS_LIMIT}"
@@ -230,7 +365,7 @@ class SignalCard:
 class MarketAnalyzer:
     SEEDS = {
         "GBP/USD OTC": (1.3380, 0.00022),
-        "AED/CNY OTC": (1.9640, 0.00025),
+        "AED/CNY OTC": (1.9740, 0.00025),
         "AUD/CAD OTC": (0.9120, 0.00020),
         "NZD/CHF OTC": (0.5210, 0.00018),
         "EUR/USD OTC": (1.0840, 0.00020),
@@ -283,7 +418,6 @@ class MarketAnalyzer:
             tech_signals.append(clamp(math.tanh(sum(diffs[-3:]) / vol)))
 
         tech_score = sum(tech_signals) / len(tech_signals) if tech_signals else 0.0
-
         trend_dir = 1.0 if tech_score >= 0.0 else -1.0
         rand_score = clamp(trend_dir * abs(random.gauss(0.35, 0.45)) + random.uniform(-0.35, 0.35))
 
@@ -292,20 +426,10 @@ class MarketAnalyzer:
         prob = round(55.0 + min(1.0, abs(combined)) * 23.0, 1)
 
         if lang == "en":
-            if tech_score > 0.12:
-                trend_txt = "Bullish trend"
-            elif tech_score < -0.12:
-                trend_txt = "Bearish trend"
-            else:
-                trend_txt = "Range / sideways"
+            trend_txt = "Bullish trend" if tech_score > 0.12 else ("Bearish trend" if tech_score < -0.12 else "Range / sideways")
             unc = "Risk notice: every signal carries risk and is not 100% guaranteed."
         else:
-            if tech_score > 0.12:
-                trend_txt = "Tendance haussiere"
-            elif tech_score < -0.12:
-                trend_txt = "Tendance baissiere"
-            else:
-                trend_txt = "Zone de range"
+            trend_txt = "Tendance haussiere" if tech_score > 0.12 else ("Tendance baissiere" if tech_score < -0.12 else "Zone de range")
             unc = "Rappel : tout signal comporte des risques et n'est pas garanti a 100%."
 
         return SignalCard(pair, tf, action, prob, trend_txt, unc)
@@ -339,40 +463,32 @@ def lang_kb() -> InlineKeyboardMarkup:
 
 
 def home_kb(lang: str) -> InlineKeyboardMarkup:
-    """Menu d'accueil + bouton Mini-App (affiché seulement si WEBAPP_URL est en https)."""
-    base = _home_kb_base(lang)
-    rows = [list(r) for r in base.inline_keyboard]
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="⚡ Get signal", callback_data="go:market")],
+    ]
     if WEBAPP_URL.startswith("https://"):
-        rows.insert(1, [InlineKeyboardButton(text="📱 Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _home_kb_base(lang: str) -> InlineKeyboardMarkup:
+        rows.append([InlineKeyboardButton(text="📱 Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
     if lang == "en":
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⚡ Get signal", callback_data="go:market")],
-                [
-                    InlineKeyboardButton(text="💎 Account", callback_data="go:account"),
-                    InlineKeyboardButton(text="🔓 Activate", callback_data="go:activate"),
-                ],
-                [
-                    InlineKeyboardButton(text="🔗 Link & Promo", url=PARTNER_LINK),
-                    InlineKeyboardButton(text="👑 Admin", url=ADMIN_URL),
-                ],
-                [
-                    InlineKeyboardButton(text="❓ FAQ", callback_data="go:faq"),
-                    InlineKeyboardButton(text="🆘 Support", callback_data="go:support"),
-                ],
-                [InlineKeyboardButton(text="🌐 FR / EN", callback_data="go:lang")],
-            ]
-        )
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚡ Get signal", callback_data="go:market")],
+        rows.extend([
+            [
+                InlineKeyboardButton(text="💎 Account", callback_data="go:account"),
+                InlineKeyboardButton(text="✅ Verify $10", callback_data="go:verify10"),
+            ],
+            [
+                InlineKeyboardButton(text="🔗 Link & Promo", url=PARTNER_LINK),
+                InlineKeyboardButton(text="👑 Admin", url=ADMIN_URL),
+            ],
+            [
+                InlineKeyboardButton(text="❓ FAQ", callback_data="go:faq"),
+                InlineKeyboardButton(text="🆘 Support", callback_data="go:support"),
+            ],
+            [InlineKeyboardButton(text="🌐 FR / EN", callback_data="go:lang")],
+        ])
+    else:
+        rows.extend([
             [
                 InlineKeyboardButton(text="💎 Mon compte", callback_data="go:account"),
-                InlineKeyboardButton(text="🔓 Activer", callback_data="go:activate"),
+                InlineKeyboardButton(text="✅ Verifier 10$", callback_data="go:verify10"),
             ],
             [
                 InlineKeyboardButton(text="🔗 Lien & Promo", url=PARTNER_LINK),
@@ -383,8 +499,8 @@ def _home_kb_base(lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🆘 Support", callback_data="go:support"),
             ],
             [InlineKeyboardButton(text="🌐 FR / EN", callback_data="go:lang")],
-        ]
-    )
+        ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def market_kb(lang: str) -> InlineKeyboardMarkup:
@@ -477,12 +593,14 @@ def locked_signup_text(lang: str) -> str:
         return (
             "🔒 Free trials finished (5/5 used)\n\n"
             f"• Link: {PARTNER_LINK}\n"
-            f"• Promo code: {PROMO_CODE}"
+            f"• Promo code: {PROMO_CODE}\n"
+            "• Deposit $10 on the account created via the partner link, then use 'Verify $10'."
         )
     return (
         "🔒 Essais gratuits termines (5/5 utilises)\n\n"
         f"• Lien : {PARTNER_LINK}\n"
-        f"• Code promo : {PROMO_CODE}"
+        f"• Code promo : {PROMO_CODE}\n"
+        "• Inclus 10$ sur le compte inscrit avec le lien partenaire, puis utilise 'Verifier 10$'."
     )
 
 
@@ -497,6 +615,13 @@ async def run_bot():
 
     @dp.message(CommandStart())
     async def on_start(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        access.awaiting_verify.discard(uid)
+        if access.has_saved_lang(uid):
+            lang = access.get_lang(uid)
+            photo = await get_slot_photo(bot, "menu")
+            await cleaner.send_photo_clean(bot, message.chat.id, photo, start_welcome_text(lang), reply_markup=home_kb(lang))
+            return
         await cleaner.send_clean(
             bot,
             message.chat.id,
@@ -530,14 +655,68 @@ async def run_bot():
         access.del_user(target_id)
         await cleaner.send_clean(bot, message.chat.id, f"🗑️ ID {target_id} retire.")
 
+    @dp.message(F.photo)
+    async def on_photo(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        uname = message.from_user.username if message.from_user else None
+        slot = access.awaiting_photo.pop(uid, None)
+        if not slot:
+            return
+        if not access.is_admin(uname):
+            await cleaner.send_clean(bot, message.chat.id, "Commande reservee a l'admin.")
+            return
+        largest = message.photo[-1]
+        store.data["photo_file_ids"][slot] = largest.file_id
+        buf = io.BytesIO()
+        await bot.download(largest.file_id, destination=buf)
+        (ASSETS_DIR / f"{slot}.jpg").write_bytes(buf.getvalue())
+        store.save()
+        await cleaner.send_clean(bot, message.chat.id, f"✅ Photo '{slot}' enregistree.")
+
+    @dp.message(F.text)
+    async def on_text(message: Message):
+        uid = message.from_user.id if message.from_user else 0
+        uname = message.from_user.username if message.from_user else None
+        lang = access.get_lang(uid)
+        txt = (message.text or "").strip()
+
+        slot = parse_photo_cmd(txt)
+        if slot:
+            if not access.is_admin(uname):
+                return
+            access.awaiting_photo[uid] = slot
+            await cleaner.send_clean(bot, message.chat.id, f"📷 Envoie la photo pour '{slot}' maintenant.")
+            return
+
+        if uid in access.awaiting_verify:
+            access.awaiting_verify.discard(uid)
+            access.submit_claim(uid, txt)
+            try:
+                await bot.send_message(
+                    chat_id=uid,
+                    text=(
+                        f"📩 Demande enregistree pour ID {uid} (ref: {txt}) — 10$ declares via lien partenaire.\n"
+                        f"Valide avec : /add {uid}"
+                    ),
+                )
+            except Exception:
+                pass
+            msg_ok = (
+                "✅ Demande envoyee. L'admin verifiera ton compte inscrit via le lien partenaire et les 10$."
+                if lang == "fr"
+                else "✅ Request sent. Admin will check your partner-link account and the $10 deposit."
+            )
+            await cleaner.send_clean(bot, message.chat.id, msg_ok, reply_markup=back_home_kb(lang))
+
     @dp.callback_query(F.data.startswith("lang:"))
     async def cb_lang(callback: CallbackQuery):
         uid = callback.from_user.id
         cid = callback.message.chat.id
         lang = callback.data.split(":", 1)[1]
-        access.lang[uid] = lang
+        access.set_lang(uid, lang)
         await callback.answer()
-        await cleaner.send_clean(bot, cid, start_welcome_text(lang), reply_markup=home_kb(lang))
+        photo = await get_slot_photo(bot, "menu")
+        await cleaner.send_photo_clean(bot, cid, photo, start_welcome_text(lang), reply_markup=home_kb(lang))
 
     @dp.callback_query(F.data.startswith("go:"))
     async def cb_go(callback: CallbackQuery):
@@ -551,7 +730,24 @@ async def run_bot():
         if dest == "lang":
             await cleaner.send_clean(bot, cid, "🌐 Choisis une langue / Choose a language :", reply_markup=lang_kb())
         elif dest == "home":
-            await cleaner.send_clean(bot, cid, start_welcome_text(lang), reply_markup=home_kb(lang))
+            photo = await get_slot_photo(bot, "menu")
+            await cleaner.send_photo_clean(bot, cid, photo, start_welcome_text(lang), reply_markup=home_kb(lang))
+        elif dest == "verify10":
+            access.awaiting_verify.add(uid)
+            vtxt = (
+                f"✅ Verification 10$ & lien partenaire\n\n"
+                f"1. Inscris-toi via le lien : {PARTNER_LINK}\n"
+                f"2. Code promo : {PROMO_CODE}\n"
+                f"3. Assure-toi d'avoir 10$ sur le compte.\n"
+                f"Envoie maintenant ton ID/email de compte pour validation."
+                if lang == "fr"
+                else f"✅ $10 & Partner Link Check\n\n"
+                f"1. Register via link: {PARTNER_LINK}\n"
+                f"2. Promo code: {PROMO_CODE}\n"
+                f"3. Make sure $10 is in the account.\n"
+                f"Send your account ID or email now for verification."
+            )
+            await cleaner.send_clean(bot, cid, vtxt, reply_markup=back_home_kb(lang))
         elif dest == "market":
             if not access.can_generate(uid, uname):
                 await cleaner.send_clean(bot, cid, locked_signup_text(lang), reply_markup=back_home_kb(lang))
@@ -574,7 +770,6 @@ async def run_bot():
                     "❓ FAQ & Market Guide\n\n"
                     "• Engine mix: 80% technical analysis + 20% random component aligned with market trend.\n"
                     f"• Server time (UTC): {utc_now}\n"
-                    "• Timeframes: S15 is often steadier than S5; watch your selected market & trend.\n"
                     "• Risk guide: keep position sizes controlled, avoid chasing losses, and remember no signal is 100% guaranteed."
                 )
             else:
@@ -582,7 +777,6 @@ async def run_bot():
                     "❓ FAQ & Guide Marche\n\n"
                     "• Logique : 80% d'analyse technique + 20% de composante aleatoire selon la tendance du marche.\n"
                     f"• Heure de reference (UTC) : {utc_now}\n"
-                    "• Timeframes : S15 est souvent plus stable que S5 ; observe le marche et la tendance selectionnes.\n"
                     "• Repere : garde des mises raisonnables, ne force pas apres une perte, et garde a l'esprit qu'aucun signal n'est garanti a 100%."
                 )
             await cleaner.send_clean(bot, cid, txt, reply_markup=back_home_kb(lang))
@@ -648,6 +842,8 @@ async def run_bot():
 
         card = analyzer.analyze(pair, tf, lang)
         badge = "🟢 BUY" if card.action == "BUY" else "🔴 SELL"
+        slot = "buy" if card.action == "BUY" else "sell"
+        photo = await get_slot_photo(bot, slot)
 
         if lang == "en":
             final_txt = (
@@ -668,7 +864,7 @@ async def run_bot():
                 f"⚠️ {card.uncertainty}"
             )
 
-        await cleaner.edit_clean(bot, cid, msg.message_id, final_txt, reply_markup=result_kb(pair, tf, lang))
+        await cleaner.send_photo_clean(bot, cid, photo, final_txt, reply_markup=result_kb(pair, tf, lang))
 
     while True:
         try:
