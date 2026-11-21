@@ -18,6 +18,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     LinkPreviewOptions,
     Message,
+    WebAppInfo,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
@@ -25,6 +26,7 @@ log = logging.getLogger("b2k_stable_bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 PORT = int(os.getenv("PORT", "10000"))
+WEBAPP_URL = os.getenv("WEBAPP_URL", "").strip()  # ex: https://ton-service.onrender.com/webapp
 
 ADMIN_USERNAME = "b2k_ruben"
 ADMIN_URL = f"https://t.me/{ADMIN_USERNAME}"
@@ -337,6 +339,15 @@ def lang_kb() -> InlineKeyboardMarkup:
 
 
 def home_kb(lang: str) -> InlineKeyboardMarkup:
+    """Menu d'accueil + bouton Mini-App (affiché seulement si WEBAPP_URL est en https)."""
+    base = _home_kb_base(lang)
+    rows = [list(r) for r in base.inline_keyboard]
+    if WEBAPP_URL.startswith("https://"):
+        rows.insert(1, [InlineKeyboardButton(text="📱 Mini-App", web_app=WebAppInfo(url=WEBAPP_URL))])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _home_kb_base(lang: str) -> InlineKeyboardMarkup:
     if lang == "en":
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -662,14 +673,22 @@ async def run_bot():
     while True:
         try:
             await dp.start_polling(bot, drop_pending_updates=True)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            log.error("Interruption polling bot, reprise dans 4s : %s", exc)
-            await asyncio.sleep(4)
+            err_msg = str(exc)
+            if "Request timeout" in err_msg or "Timeout" in err_msg:
+                log.warning("Timeout reseau temporaire, reprise dans 2s...")
+                await asyncio.sleep(2)
+            else:
+                log.warning("Reconnexion polling dans 4s : %s", exc)
+                await asyncio.sleep(4)
 
 
 async def main():
     app = web.Application()
     app.router.add_get("/", index)
+    app.router.add_get("/webapp", index)
     app.router.add_get("/health", health)
     runner = web.AppRunner(app)
     await runner.setup()
