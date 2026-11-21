@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>B2K Mini-App</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0b0f17;--card:#131a26;--card2:#192232;--line:#253248;--tx:#f3f6fb;--mut:#8fa0bc;--ac:#3b82f6;--up:#22c55e;--dn:#ef4444;--warn:#fbbf24}
+*{box-sizing:border-box;margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{background:var(--bg);color:var(--tx);padding:14px 16px 28px;min-height:100vh}
+.wrap{max-width:460px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.top{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}
+.brand{font-weight:800;font-size:16px}.sub{font-size:12px;color:var(--mut);margin-top:2px}
+.price{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;text-align:right}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.label{font-size:12px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.5px}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:var(--card2);color:var(--tx);border:1px solid var(--line);border-radius:12px;padding:10px 12px;font-size:13px;font-weight:700;cursor:pointer}
+.chip.on{background:rgba(59,130,246,.22);border-color:var(--ac)}
+.btn{width:100%;border:0;border-radius:14px;padding:14px;font-size:15px;font-weight:800;color:#fff;background:linear-gradient(135deg,#2563eb,#1d4ed8);cursor:pointer}
+.btn:disabled{opacity:.6}
+.btn.sec{background:var(--card2);border:1px solid var(--line);font-size:13px;padding:11px}
+.btn.sec.on{border-color:var(--up);color:var(--up)}
+.badge{width:fit-content;padding:6px 12px;border-radius:10px;font-size:15px;font-weight:900}
+.badge.up{background:rgba(34,197,94,.18);color:#4ade80;border:1px solid rgba(34,197,94,.45)}
+.badge.dn{background:rgba(239,68,68,.18);color:#f87171;border:1px solid rgba(239,68,68,.45)}
+.badge.nt{background:var(--card2);color:var(--mut);border:1px solid var(--line)}
+.bar{position:relative;height:10px;border-radius:5px;background:var(--card2);overflow:hidden}
+.bar::after{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--mut)}
+.fill{position:absolute;top:0;bottom:0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cell{background:var(--card2);border-radius:10px;padding:8px 10px;font-size:12px;color:var(--mut)}
+.cell b{display:block;color:var(--tx);font-size:14px;margin-top:2px;font-variant-numeric:tabular-nums}
+.mut{font-size:12px;color:var(--mut);line-height:1.4}
+.warn{font-size:11px;color:var(--warn);line-height:1.4}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{color:var(--mut);font-weight:600;text-align:left;padding:4px 0}
+td{padding:6px 0;border-top:1px solid var(--line);font-variant-numeric:tabular-nums}
+.up{color:var(--up)}.dn{color:var(--dn)}
+input[type=number]{width:70px;background:var(--card2);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:6px;font-size:13px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.rec{display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-top:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div>
+      <div class="brand">B2K Mini-App</div>
+      <div class="sub" id="src">Connexion…</div>
+    </div>
+    <div class="price" id="price">--</div>
+  </div>
+
+  <div class="card">
+    <div class="label">1. Paire (prix réels Binance)</div>
+    <div class="chips" id="pairs"></div>
+    <div class="label" style="margin-top:4px">2. Timeframe</div>
+    <div class="chips" id="tfs"></div>
+    <button class="btn" id="run">⚡ Analyser maintenant</button>
+    <button class="btn sec" id="auto">Test automatique : désactivé</button>
+  </div>
+
+  <div class="card" id="result">
+    <div class="mut">Choisis une paire et un timeframe, puis appuie sur « Analyser maintenant ».</div>
+  </div>
+
+  <div class="card">
+    <div class="label">Résultats mesurés (ce téléphone)</div>
+    <div class="mut">Chaque signal est enregistré, puis comparé au vrai prix à l'expiration. C'est ce tableau qui dit si l'outil marche, pas un pourcentage annoncé.</div>
+    <div class="row"><span class="mut">Payout du courtier (%)</span><input type="number" id="payout" value="85" min="10" max="100"></div>
+    <table>
+      <thead><tr><th>TF</th><th>Signaux</th><th>Réussite</th><th>IC 95 %</th><th>Verdict</th></tr></thead>
+      <tbody id="stats"></tbody>
+    </table>
+    <div class="mut" id="be"></div>
+    <div id="recent"></div>
+    <button class="btn sec" id="reset">Effacer le journal</button>
+  </div>
+
+  <div class="card">
+    <div class="label">Paires OTC</div>
+    <div class="mut">Non disponibles : les prix OTC sont fabriqués par le courtier et aucune source publique n'existe. Un signal OTC serait calculé sur des données inventées, donc il n'est pas affiché.</div>
+  </div>
+
+  <div class="warn">⚠️ Outil d'analyse technique, pas un conseil financier. Aucun signal n'est garanti. Ne mise jamais plus que ce que tu peux te permettre de perdre.</div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const tg = window.Telegram && window.Telegram.WebApp;
+try { if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#0b0f17"); tg.setBackgroundColor && tg.setBackgroundColor("#0b0f17"); } } catch (e) {}
+
+const PAIRS = [
+  { id: "BTCUSDT", label: "Bitcoin" }, { id: "ETHUSDT", label: "Ethereum" },
+  { id: "SOLUSDT", label: "Solana" }, { id: "BNBUSDT", label: "BNB" }, { id: "XRPUSDT", label: "XRP" }
+];
+const TFS = { S5: 5, S15: 15, S30: 30, M1: 60 };
+let BASES = ["https://data-api.binance.vision/api/v3", "https://api.binance.com/api/v3"];
+let pair = PAIRS[0].id, tf = "S15", auto = false, busy = false, lastPx = null;
+
+/* ---------- journal (mémoire + localStorage si dispo) ---------- */
+const KEY = "b2k_journal_v1";
+function load() { try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { return []; } }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(journal.slice(-1000))); } catch (e) {} }
+let journal = load();
+
+/* ---------- réseau ---------- */
+async function jget(url) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 4000);
+  try { const r = await fetch(url, { signal: ctl.signal }); if (!r.ok) throw new Error("HTTP " + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+async function api(path) {
+  let err;
+  for (const b of BASES) {
+    try { const d = await jget(b + path); BASES = [b, ...BASES.filter(x => x !== b)]; return d; } catch (e) { err = e; }
+  }
+  throw err;
+}
+const getPrice = async p => +(await api("/ticker/price?symbol=" + p)).price;
+async function getCloses(p, key) {
+  const sec = TFS[key];
+  if (sec === 60) return (await api(`/klines?symbol=${p}&interval=1m&limit=120`)).map(k => +k[4]);
+  const c1 = (await api(`/klines?symbol=${p}&interval=1s&limit=1000`)).map(k => +k[4]);
+  const out = [];
+  for (let i = c1.length - 1; i >= 0; i -= sec) out.push(c1[i]);
+  return out.reverse();
+}
+
+/* ---------- indicateurs ---------- */
+const clamp = (v, a = -1, b = 1) => Math.max(a, Math.min(b, v));
+const mean = x => x.reduce((a, b) => a + b, 0) / x.length;
+const sma = (x, n) => x.length >= n ? mean(x.slice(-n)) : null;
+function emaS(x, n) { const k = 2 / (n + 1), o = [x[0]]; for (let i = 1; i < x.length; i++) o.push(x[i] * k + o[i - 1] * (1 - k)); return o; }
+function rsi(x, n = 14) {
+  if (x.length < n + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= n; i++) { const d = x[i] - x[i - 1]; if (d > 0) g += d; else l -= d; }
+  let ag = g / n, al = l / n;
+  for (let i = n + 1; i < x.length; i++) { const d = x[i] - x[i - 1]; ag = (ag * (n - 1) + Math.max(d, 0)) / n; al = (al * (n - 1) + Math.max(-d, 0)) / n; }
+  return al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+}
+function macdHist(x) {
+  const f = emaS(x, 12), s = emaS(x, 26), line = f.map((v, i) => v - s[i]), sg = emaS(line, 9);
+  return line[line.length - 1] - sg[sg.length - 1];
+}
+function boll(x, n = 20, k = 2) {
+  const w = x.slice(-n), m = mean(w), sd = Math.sqrt(mean(w.map(v => (v - m) ** 2)));
+  return { lo: m - k * sd, mid: m, hi: m + k * sd, sd };
+}
+function analyze(c) {
+  if (c.length < 30) return null;
+  const px = c[c.length - 1], d = [];
+  for (let i = Math.max(1, c.length - 30); i < c.length; i++) d.push(c[i] - c[i - 1]);
+  const vol = Math.sqrt(mean(d.map(v => v * v))) || 1e-9;
+  const r = rsi(c), mh = macdHist(c), b = boll(c), f9 = sma(c, 9), s21 = sma(c, 21);
+  const f = {
+    rsi: clamp((50 - r) / 30), macd: clamp(Math.tanh(mh / vol)),
+    boll: clamp(-((px - b.mid) / (b.sd || 1e-9)) / 2), trend: clamp(Math.tanh((f9 - s21) / vol)),
+    micro: clamp(Math.tanh(d.slice(-3).reduce((a, v) => a + v, 0) / vol))
+  };
+  const W = { rsi: .8, macd: 1, boll: .7, trend: .9, micro: .6 };
+  const tw = Object.values(W).reduce((a, v) => a + v, 0);
+  const score = Object.keys(W).reduce((a, k) => a + W[k] * f[k], 0) / tw;
+  return { score, px, r, mh, b, f9, s21 };
+}
+
+/* ---------- affichage ---------- */
+const fmt = p => p == null ? "--" : p >= 100 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6);
+function wilson(k, n, z = 1.96) { const p = k / n, d = 1 + z * z / n, c = (p + z * z / (2 * n)) / d, h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d; return [c - h, c + h]; }
+
+function renderSelectors() {
+  $("#pairs").innerHTML = PAIRS.map(p => `<button class="chip ${p.id === pair ? "on" : ""}" data-p="${p.id}">${p.label}</button>`).join("");
+  $("#tfs").innerHTML = Object.keys(TFS).map(t => `<button class="chip ${t === tf ? "on" : ""}" data-t="${t}">${t}</button>`).join("");
+  document.querySelectorAll("[data-p]").forEach(b => b.onclick = () => { pair = b.dataset.p; lastPx = null; renderSelectors(); });
+  document.querySelectorAll("[data-t]").forEach(b => b.onclick = () => { tf = b.dataset.t; renderSelectors(); });
+}
+
+function renderResult(a, logged, note) {
+  if (!a) { $("#result").innerHTML = `<div class="mut">${note || "Pas assez de données."}</div>`; return; }
+  const s = Math.round(a.score * 100);
+  const cls = a.score > 0.1 ? "up" : a.score < -0.1 ? "dn" : "nt";
+  const txt = cls === "up" ? "▲ Haussier" : cls === "dn" ? "▼ Baissier" : "Neutre : pas de signal";
+  const fill = a.score >= 0 ? `left:50%;width:${a.score * 50}%;background:var(--up)` : `right:50%;width:${-a.score * 50}%;background:var(--dn)`;
+  $("#result").innerHTML = `
+    <div class="row"><div class="badge ${cls}">${txt}</div><div class="mut">Score ${s > 0 ? "+" : ""}${s} / 100</div></div>
+    <div class="bar"><div class="fill" style="${fill}"></div></div>
+    <div class="mut">Le score mesure la force des indicateurs, ce n'est pas une probabilité de gain.</div>
+    <div class="grid">
+      <div class="cell">RSI(14)<b>${a.r.toFixed(1)}</b></div>
+      <div class="cell">MACD hist.<b>${a.mh.toPrecision(3)}</b></div>
+      <div class="cell">SMA 9 / 21<b>${a.f9 > a.s21 ? "9 > 21" : "9 < 21"}</b></div>
+      <div class="cell">Bollinger<b>${a.px > a.b.hi ? "au-dessus" : a.px < a.b.lo ? "en dessous" : "dans la bande"}</b></div>
+    </div>
+    <div class="mut" id="pend">${logged ? "Signal enregistré, résultat bientôt." : (note || "")}</div>`;
+}
+
+function renderStats() {
+  const pay = clamp(parseFloat($("#payout").value) || 85, 10, 100) / 100;
+  const be = 1 / (1 + pay);
+  $("#stats").innerHTML = Object.keys(TFS).map(t => {
+    const w = journal.filter(j => j.tf === t && j.status === "win").length;
+    const l = journal.filter(j => j.tf === t && j.status === "loss").length;
+    const n = w + l;
+    if (!n) return `<tr><td>${t}</td><td>0</td><td>--</td><td>--</td><td class="mut">aucun</td></tr>`;
+    const [lo, hi] = wilson(w, n);
+    const v = n < 100 ? "trop tôt" : lo > be ? "avantage ?" : "aucune preuve";
+    return `<tr><td>${t}</td><td>${n}</td><td>${(w / n * 100).toFixed(1)}%</td><td>${(lo * 100).toFixed(0)}–${(hi * 100).toFixed(0)}%</td><td class="${v === "avantage ?" ? "up" : "mut"}">${v}</td></tr>`;
+  }).join("");
+  $("#be").textContent = `Pour gagner de l'argent avec un payout de ${Math.round(pay * 100)} %, il faut réussir plus de ${(be * 100).toFixed(1)} % des trades, et le prouver sur 300 signaux ou plus. Un « avantage ? » reste à confirmer.`;
+  const rec = journal.slice(-8).reverse().map(j => {
+    const st = j.status === "win" ? '<span class="up">gagné</span>' : j.status === "loss" ? '<span class="dn">perdu</span>' : j.status === "tie" ? "égalité" : j.status === "expired" ? "expiré" : "en cours…";
+    return `<div class="rec"><span>${new Date(j.t).toLocaleTimeString()} · ${j.pair.replace("USDT", "")} ${j.tf} ${j.dir === "UP" ? "▲" : "▼"}</span><span>${st}</span></div>`;
+  }).join("");
+  $("#recent").innerHTML = rec;
+}
+
+/* ---------- logique ---------- */
+const hasPending = () => journal.some(j => j.status === "pending" && j.pair === pair && j.tf === tf);
+
+async function run(fromAuto) {
+  if (busy) return;
+  busy = true; $("#run").disabled = true;
+  try {
+    const a = analyze(await getCloses(pair, tf));
+    if (!a) { renderResult(null, false, "Pas assez de données pour cette paire / ce timeframe."); return; }
+    let logged = false, note = "";
+    if (Math.abs(a.score) >= 0.1) {
+      if (hasPending()) note = "Un signal est déjà en cours de mesure pour cette paire et ce timeframe.";
+      else {
+        let p0 = a.px; try { p0 = await getPrice(pair); } catch (e) {}  // même source que le prix d'expiration
+        journal.push({ id: Date.now(), t: Date.now(), pair, tf, dir: a.score > 0 ? "UP" : "DOWN", score: a.score, p0, status: "pending" });
+        save(); logged = true;
+      }
+    }
+    renderResult(a, logged, note); renderStats();
+    if (tg && tg.HapticFeedback && !fromAuto) tg.HapticFeedback.impactOccurred("light");
+  } catch (e) {
+    renderResult(null, false, "Connexion à Binance impossible pour le moment. Réessaie dans quelques secondes.");
+  } finally { busy = false; $("#run").disabled = false; }
+}
+
+async function tick() {
+  try {
+    lastPx = await getPrice(pair);
+    $("#price").textContent = fmt(lastPx);
+    $("#src").textContent = "Binance · prix en direct";
+  } catch (e) { $("#src").textContent = "Connexion…"; }
+  const now = Date.now();
+  const due = journal.filter(j => j.status === "pending" && now >= j.t + TFS[j.tf] * 1000);
+  if (due.length) {
+    const prices = {};
+    for (const p of new Set(due.map(j => j.pair))) { try { prices[p] = await getPrice(p); } catch (e) {} }
+    for (const j of due) {
+      if (now > j.t + TFS[j.tf] * 1000 + 10000) { j.status = "expired"; continue; }
+      const p1 = prices[j.pair]; if (p1 == null) continue;
+      j.p1 = p1; j.status = p1 === j.p0 ? "tie" : ((p1 > j.p0) === (j.dir === "UP") ? "win" : "loss");
+    }
+    save(); renderStats();
+  }
+  const pend = journal.find(j => j.status === "pending" && j.pair === pair && j.tf === tf);
+  const el = $("#pend");
+  if (el && pend) el.textContent = `Signal enregistré, résultat dans ${Math.max(0, Math.ceil((pend.t + TFS[tf] * 1000 - Date.now()) / 1000))} s.`;
+  if (auto && !busy && !hasPending()) await run(true);
+}
+(async function loop() { await tick(); setTimeout(loop, 1000); })();
+
+$("#run").onclick = () => run(false);
+$("#auto").onclick = () => { auto = !auto; $("#auto").classList.toggle("on", auto); $("#auto").textContent = "Test automatique : " + (auto ? "activé (garde l'app ouverte)" : "désactivé"); };
+$("#payout").oninput = renderStats;
+$("#reset").onclick = () => { journal = []; save(); renderStats(); };
+renderSelectors(); renderStats();
+</script>
+</body>
+</html>
