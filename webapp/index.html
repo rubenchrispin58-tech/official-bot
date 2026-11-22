@@ -117,6 +117,19 @@ input[type=number]{width:76px}
     <button class="btn sec" id="auto">Test automatique : désactivé</button>
   </div>
 
+  <div class="card" id="autotraderCard">
+    <div class="row">
+      <div class="label">Auto-Trading Démo (50 $)</div>
+      <span class="tag-otc" id="atStatus">ARRÊTÉ</span>
+    </div>
+    <div class="mut" id="atInfo">Solde démo : <b>50.00 $</b> · Mise max : <b>1.00 $</b> · Plancher stop : <b>45.00 $</b></div>
+    <div class="row">
+      <button class="btn" id="atStart">▶️ Démarrer Auto-Trade</button>
+      <button class="btn sec" id="atStop">⏹️ Arrêter</button>
+    </div>
+    <div class="mut" id="atLog">Simulation démo uniquement (aucun ordre réel ni accès compte courtier).</div>
+  </div>
+
   <div class="card" id="result">
     <div class="mut">Sélectionne une paire (réelle ou OTC) et un timeframe, puis lance l'analyse.</div>
   </div>
@@ -171,6 +184,16 @@ const ALL_PAIRS = [...CRYPTO_PAIRS, ...OTC_PAIRS];
 const TFS = { S5: 5, S15: 15, S30: 30, M1: 60 };
 let BASES = ["https://data-api.binance.vision/api/v3", "https://api.binance.com/api/v3"];
 let pair = CRYPTO_PAIRS[0].id, tf = "S15", auto = false, busy = false, lastPx = null;
+
+let atRunning = false;
+let atHalted = false;
+let demoBalance = 50.0;
+const DEMO_START = 50.0;
+const DEMO_MAX_STAKE_PCT = 2.0;
+const DEMO_MAX_LOSS_PCT = 10.0;
+const DEMO_MAX_LOSS_STREAK = 3;
+const DEMO_MIN_PAYOUT = 80.0;
+let demoLossStreak = 0;
 
 const otcSim = {};
 for (const p of OTC_PAIRS) {
@@ -351,6 +374,75 @@ function renderStats() {
   $("#recent").innerHTML = rec;
 }
 
+function renderAutoTrader(msgText) {
+  const st = $("#atStatus");
+  const info = $("#atInfo");
+  const logBox = $("#atLog");
+  if (!st || !info || !logBox) return;
+  if (atHalted) {
+    st.textContent = "STOP SÉCURITÉ";
+    st.className = "tag-otc";
+  } else if (atRunning) {
+    st.textContent = "ACTIF (DÉMO)";
+    st.className = "tag-live";
+  } else {
+    st.textContent = "ARRÊTÉ";
+    st.className = "tag-otc";
+  }
+  const maxStake = Math.max(0.1, +(demoBalance * (DEMO_MAX_STAKE_PCT / 100)).toFixed(2));
+  const stopFloor = +(DEMO_START * (1 - DEMO_MAX_LOSS_PCT / 100)).toFixed(2);
+  info.innerHTML = `Solde démo : <b>${demoBalance.toFixed(2)} $</b> · Mise max : <b>${maxStake.toFixed(2)} $</b> · Plancher stop : <b>${stopFloor.toFixed(2)} $</b>`;
+  if (msgText) logBox.textContent = msgText;
+}
+
+async function stepDemoAutoTrade() {
+  if (!atRunning || atHalted || busy) return;
+  const stopFloor = DEMO_START * (1 - DEMO_MAX_LOSS_PCT / 100);
+  if (demoBalance <= stopFloor) {
+    atRunning = false;
+    atHalted = true;
+    renderAutoTrader(`Stop sécurité : solde démo (${demoBalance.toFixed(2)} $) sous le plancher ${stopFloor.toFixed(2)} $.`);
+    return;
+  }
+  if (demoLossStreak >= DEMO_MAX_LOSS_STREAK) {
+    atRunning = false;
+    atHalted = true;
+    renderAutoTrader(`Stop sécurité : ${DEMO_MAX_LOSS_STREAK} pertes d'affilée atteintes.`);
+    return;
+  }
+  const payout = Math.max(10, Math.min(100, parseFloat($("#payout")?.value) || 92));
+  if (payout < DEMO_MIN_PAYOUT) {
+    renderAutoTrader(`Signal sauté : payout ${payout}% < ${DEMO_MIN_PAYOUT}%.`);
+    return;
+  }
+  const t0 = performance.now();
+  const closes = await getCloses(pair, tf);
+  const ageS = (performance.now() - t0) / 1000;
+  if (ageS > 1.5) {
+    renderAutoTrader(`Signal sauté : délai ${ageS.toFixed(2)}s > 1.5s.`);
+    return;
+  }
+  const a = analyze(closes);
+  if (!a || Math.abs(a.score) < 0.1) {
+    renderAutoTrader("Marché neutre : aucun trade simulé sur ce tour.");
+    return;
+  }
+  const stake = Math.min(demoBalance, +(demoBalance * (DEMO_MAX_STAKE_PCT / 100)).toFixed(2));
+  const dir = a.score > 0 ? "BUY" : "SELL";
+  const winProb = Math.min(0.68, Math.max(0.45, 0.52 + Math.abs(a.score) * 0.12));
+  const won = Math.random() < winProb;
+  if (won) {
+    const gain = +(stake * (payout / 100)).toFixed(2);
+    demoBalance = +(demoBalance + gain).toFixed(2);
+    demoLossStreak = 0;
+    renderAutoTrader(`[DÉMO ${dir} ${pair} ${tf}] GAGNÉ +${gain.toFixed(2)} $ -> Solde : ${demoBalance.toFixed(2)} $`);
+  } else {
+    demoBalance = Math.max(0, +(demoBalance - stake).toFixed(2));
+    demoLossStreak += 1;
+    renderAutoTrader(`[DÉMO ${dir} ${pair} ${tf}] PERDU -${stake.toFixed(2)} $ -> Solde : ${demoBalance.toFixed(2)} $ (série pertes : ${demoLossStreak})`);
+  }
+}
+
 const hasPending = () => journal.some(j => j.status === "pending" && j.pair === pair && j.tf === tf);
 
 async function run(fromAuto) {
@@ -398,14 +490,29 @@ async function tick() {
   const el = $("#pend");
   if (el && pend) el.textContent = `Signal enregistré, résultat dans ${Math.max(0, Math.ceil((pend.t + TFS[tf] * 1000 - Date.now()) / 1000))} s.`;
   if (auto && !busy && !hasPending()) await run(true);
+  if (atRunning && !atHalted && !busy) await stepDemoAutoTrade();
 }
 (async function loop() { await tick(); setTimeout(loop, 1000); })();
 
 $("#run").onclick = () => run(false);
 $("#auto").onclick = () => { auto = !auto; $("#auto").classList.toggle("on", auto); $("#auto").textContent = "Test automatique : " + (auto ? "activé (garde l'app ouverte)" : "désactivé"); };
+$("#atStart").onclick = () => {
+  if (demoBalance <= DEMO_START * (1 - DEMO_MAX_LOSS_PCT / 100)) {
+    demoBalance = DEMO_START;
+    demoLossStreak = 0;
+  }
+  atHalted = false;
+  atRunning = true;
+  renderAutoTrader("Auto-trade démo (50 $) démarré.");
+  stepDemoAutoTrade();
+};
+$("#atStop").onclick = () => {
+  atRunning = false;
+  renderAutoTrader("Auto-trade démo arrêté manuellement.");
+};
 $("#payout").oninput = renderStats;
 $("#reset").onclick = () => { journal = []; save(); renderStats(); };
-renderSelectors(); renderStats();
+renderSelectors(); renderStats(); renderAutoTrader();
 </script>
 </body>
 </html>
